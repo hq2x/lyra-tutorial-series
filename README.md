@@ -160,7 +160,7 @@ cd Samples/Games/Lyra
 
 所有文章的代码示例都在配套代码仓库中：
 
-👉 **[ue5-lyra-tutorial-code](https://github.com/lobsterchen/ue5-lyra-tutorial-code)** (即将创建)
+👉 **[ue5-lyra-tutorial-code](https://github.com/hq2x/ue5-lyra-tutorial-code)** (即将创建)
 
 ### 视频教程
 
@@ -285,9 +285,9 @@ cd Samples/Games/Lyra
 
 ## 📧 联系方式
 
-- **作者**: lobsterchen
+- **作者**: hq2x
 - **Email**: coder2018cp@gmail.com
-- **GitHub**: [@lobsterchen](https://github.com/lobsterchen)
+- **GitHub**: [@hq2x](https://github.com/hq2x)
 
 ---
 
@@ -295,7 +295,7 @@ cd Samples/Games/Lyra
 
 如果这个教程对你有帮助，请给个 Star ⭐ 支持一下！
 
-[![Star History Chart](https://api.star-history.com/svg?repos=lobsterchen/ue5-lyra-tutorial-docs&type=Date)](https://star-history.com/#lobsterchen/ue5-lyra-tutorial-docs&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=hq2x/ue5-lyra-tutorial-docs&type=Date)](https://star-history.com/#hq2x/ue5-lyra-tutorial-docs&Date)
 
 ---
 
