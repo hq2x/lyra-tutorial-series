@@ -4,7 +4,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![UE Version](https://img.shields.io/badge/UE-5.1+-blue.svg)](https://www.unrealengine.com/)
-[![Progress](https://img.shields.io/badge/Progress-0%2F30-red.svg)]()
+[![Progress](https://img.shields.io/badge/Progress-8%2F30-orange.svg)]()
 
 ---
 
@@ -51,14 +51,14 @@
 
 | # | 标题 | 字数 | 状态 | 链接 |
 |---|------|------|------|------|
-| 06 | Gameplay Ability System (GAS) 入门 | 6000-7000 | ⬜ 计划中 | - |
-| 07 | GAS 进阶：Attributes 与 Gameplay Effects | 6000-7000 | ⬜ 计划中 | - |
-| 08 | GAS 高级：Gameplay Cues 与 Visual Feedback | 5000-6000 | ⬜ 计划中 | - |
-| 09 | Enhanced Input System 完全指南 | 5000-6000 | ⬜ 计划中 | - |
-| 10 | 装备与武器系统详解 | 6000-7000 | ⬜ 计划中 | - |
-| 11 | 背包与物品系统 | 5000-6000 | ⬜ 计划中 | - |
-| 12 | 队伍系统与 PvP 机制 | 5000-6000 | ⬜ 计划中 | - |
-| 13 | 角色状态机与游戏阶段 (Game Phases) | 4000-5000 | ⬜ 计划中 | - |
+| 06 | Gameplay Ability System (GAS) 入门 | 6000-7000 | ✅ 已完成 | [查看](./docs/02-core-systems/06-gas-basics.md) |
+| 07 | GAS 进阶：Attributes 与 Gameplay Effects | 6000-7000 | ✅ 已完成 | [查看](./docs/02-core-systems/07-gas-advanced.md) |
+| 08 | GAS 高级：Gameplay Cues 与 Visual Feedback | 5000-6000 | ✅ 已完成 | [查看](./docs/02-core-systems/08-gas-practical.md) |
+| 09 | Enhanced Input System 完全指南 | 5000-6000 | ✅ 已完成 | [查看](./docs/02-core-systems/09-enhanced-input.md) |
+| 10 | 装备与武器系统详解 | 6000-7000 | ✅ 已完成 | [查看](./docs/02-core-systems/10-equipment-weapon.md) |
+| 11 | 背包与物品系统 | 5000-6000 | ✅ 已完成 | [查看](./docs/02-core-systems/11-inventory-items.md) |
+| 12 | 队伍系统与 PvP 机制 | 5000-6000 | ✅ 已完成 | [查看](./docs/02-core-systems/12-team-system.md) |
+| 13 | 游戏阶段管理系统 (Game Phase System) | 10000+ | ✅ 已完成 | [查看](./docs/02-core-systems/13-game-phase-system.md) |
 
 **本部分目标**: 掌握核心游戏系统的开发能力
 
