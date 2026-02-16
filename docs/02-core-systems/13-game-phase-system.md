@@ -1,5 +1,22 @@
 # UE5 Lyra 游戏阶段管理系统（Game Phase System）
 
+## 目录
+
+- [概述](#概述)
+- [核心架构](#核心架构)
+- [ULyraGamePhaseSubsystem 详解](#ulyragamephasesubsystem-详解)
+- [ULyraGamePhaseAbility 详解](#ulyragamephaseability-详解)
+- [与 Experience System 的集成](#与-experience-system-的集成)
+- [网络同步机制](#网络同步机制)
+- [完整代码示例](#完整代码示例)
+- [实战案例：比赛模式的完整阶段流程](#实战案例比赛模式的完整阶段流程)
+- [调试和性能优化](#调试和性能优化)
+- [最佳实践与设计模式](#最佳实践与设计模式)
+- [常见问题与解决方案](#常见问题与解决方案)
+- [总结](#总结)
+
+---
+
 ## 概述
 
 游戏阶段管理系统是 Lyra 中用于组织和控制游戏流程的核心架构。它允许开发者将游戏的不同状态（如等待开始、游戏进行中、游戏结束等）建模为可管理、可扩展的"阶段"（Phase）。这些阶段通过 GameplayTag 层次结构进行组织，支持父子嵌套关系，并与 GAS（Gameplay Ability System）深度集成。
@@ -2319,39 +2336,227 @@ void UGA_GamePhase_PreMatch::OnCountdownPhaseEnded(const ULyraGamePhaseAbility* 
 }
 ```
 
+## 常见问题与解决方案
+
+### 问题 1：阶段未正确结束
+
+**症状：** 新阶段启动，但旧阶段仍然活跃
+
+**原因：** GamePhaseTag 层次结构设置错误
+
+**解决方案：**
+```cpp
+// 错误示例：
+GamePhaseTag = "Game.Playing";       // 父阶段
+NewPhaseTag = "Game.Playing.Round2";  // 子阶段
+// Round1 没有被结束，因为 Round2 匹配 Playing
+
+// 正确做法：
+// 如果 Round1 和 Round2 应该互斥，它们应该是同级：
+Round1Tag = "Game.Playing.Round1";
+Round2Tag = "Game.Playing.Round2";
+// 启动 Round2 会自动结束 Round1
+```
+
+### 问题 2：Observer 回调未触发
+
+**症状：** 注册了 WhenPhaseStartsOrIsActive，但回调没有执行
+
+**可能原因：**
+1. MatchType 设置错误（ExactMatch vs PartialMatch）
+2. 委托绑定的对象已被销毁
+3. 阶段在注册之前就已经启动
+
+**解决方案：**
+```cpp
+// 确保使用正确的 MatchType
+PhaseSubsystem->WhenPhaseStartsOrIsActive(
+    FGameplayTag::RequestGameplayTag(TEXT("Game.Playing")),
+    EPhaseTagMatchType::PartialMatch,  // 使用 PartialMatch 匹配子阶段
+    Callback
+);
+
+// 使用 UObject 而非 Lambda（避免悬空指针）
+FLyraGamePhaseTagDelegate::CreateUObject(this, &UMyClass::OnPhaseStarted)
+
+// 如果阶段可能已经活跃，WhenPhaseStartsOrIsActive 会立即触发回调
+// 无需额外检查
+```
+
+### 问题 3：网络同步问题
+
+**症状：** 服务器阶段已切换，但客户端不知道
+
+**原因：** 阶段系统本身不自动同步到客户端
+
+**解决方案：**
+```cpp
+// 在 GameState 上添加复制的 GameplayTag 容器
+UPROPERTY(Replicated)
+FGameplayTagContainer CurrentPhaseTags;
+
+// 在阶段 Ability 中更新
+void UMyGamePhaseAbility::ActivateAbility(...)
+{
+    Super::ActivateAbility(...);
+    
+    if (HasAuthority())
+    {
+        ALyraGameState* GS = GetWorld()->GetGameState<ALyraGameState>();
+        GS->CurrentPhaseTags.AddTag(GamePhaseTag);
+    }
+}
+
+// 客户端监听复制
+void ALyraGameState::OnRep_CurrentPhaseTags()
+{
+    // 客户端逻辑
+    OnPhaseTagsChanged.Broadcast(CurrentPhaseTags);
+}
+```
+
+### 问题 4：阶段切换过于频繁导致性能问题
+
+**症状：** 游戏卡顿，大量阶段激活/结束日志
+
+**解决方案：**
+```cpp
+// 1. 合并阶段，减少切换次数
+// 2. 在阶段内部使用状态变量而非创建子阶段
+class UGA_GamePhase_Playing : public ULyraGamePhaseAbility
+{
+    enum class ESubPhase { Warmup, NormalPlay, Overtime };
+    ESubPhase CurrentSubPhase;  // 内部管理，不创建新的 Phase Ability
+};
+
+// 3. 使用定时器批处理阶段切换
+void DelayedPhaseTransition()
+{
+    FTimerHandle Handle;
+    GetWorld()->GetTimerManager().SetTimer(Handle, []() {
+        // 在下一帧或延迟后切换
+        PhaseSubsystem->StartPhase(NextPhase);
+    }, 0.1f, false);
+}
+```
+
+### 问题 5：阶段无法在 PIE（Play In Editor）中正常工作
+
+**症状：** 在编辑器中玩家测试时阶段系统不工作
+
+**原因：** Subsystem 创建条件或 GameState ASC 未正确初始化
+
+**解决方案：**
+```cpp
+// 检查 Subsystem 的 DoesSupportWorldType
+bool ULyraGamePhaseSubsystem::DoesSupportWorldType(const EWorldType::Type WorldType) const
+{
+    // 确保支持 PIE
+    return WorldType == EWorldType::Game || WorldType == EWorldType::PIE;
+}
+
+// 确保 GameState 有 ASC
+void AMyGameState::PostInitializeComponents()
+{
+    Super::PostInitializeComponents();
+    
+    // 创建 ASC（如果还没有）
+    if (!AbilitySystemComponent)
+    {
+        AbilitySystemComponent = CreateDefaultSubobject<ULyraAbilitySystemComponent>(TEXT("AbilitySystemComponent"));
+        AbilitySystemComponent->SetIsReplicated(true);
+    }
+}
+```
+
 ## 总结
 
 Lyra 的游戏阶段管理系统通过将阶段建模为 Gameplay Ability，创造了一个强大、灵活且易于扩展的游戏流程控制架构。
 
-**核心优势：**
+### 核心优势
+
 1. **层次化设计**：通过 GameplayTag 层次结构实现父子阶段嵌套，兄弟阶段互斥
 2. **GAS 集成**：利用 Gameplay Ability System 的成熟机制处理生命周期和网络同步
 3. **Observer 模式**：提供灵活的事件监听机制，支持精确匹配和部分匹配
 4. **服务器权威**：确保网络游戏中的阶段状态一致性
 5. **易于调试**：日志系统和可视化工具帮助开发者快速定位问题
 
-**适用场景：**
-- 多人竞技游戏（大厅→准备→比赛→结算）
-- 回合制游戏（回合开始→行动阶段→结算阶段→回合结束）
-- 教学系统（介绍→练习→测试→完成）
-- 剧情关卡（过场→探索→战斗→剧情）
+### 适用场景
 
-**扩展方向：**
-- 实现可保存的阶段状态（支持游戏存档）
-- 添加阶段历史记录和回溯功能
-- 集成分析系统追踪玩家在各阶段的行为
-- 创建可视化的阶段编辑器工具
+- **多人竞技游戏**：大厅→准备→比赛→结算
+- **回合制游戏**：回合开始→行动阶段→结算阶段→回合结束
+- **教学系统**：介绍→练习→测试→完成
+- **剧情关卡**：过场→探索→战斗→剧情
+
+### 设计原则总结
+
+1. **粗粒度阶段**：避免过细的阶段划分，使用内部状态管理子状态
+2. **单一职责**：每个阶段只负责一个明确的游戏流程部分
+3. **事件驱动**：使用 Observer 模式而非轮询，实现松耦合
+4. **错误处理**：为阶段切换失败提供合理的回退机制
+5. **性能优先**：控制阶段切换频率，优化 Observer 列表管理
+
+### 扩展方向
+
+- **可保存的阶段状态**：支持游戏存档和断线重连
+- **阶段历史记录**：追踪阶段转换历史，便于调试和分析
+- **可视化编辑器**：创建节点编辑器来设计阶段流程
+- **分析系统集成**：追踪玩家在各阶段的行为数据
+- **动态阶段加载**：根据游戏模式动态加载阶段配置
+
+### 关键要点
+
+**✅ 推荐做法：**
+- 使用 Observer 模式监听阶段变化
+- 通过 GameplayTag 层次结构组织阶段
+- 在 GameState 的 ASC 上管理阶段 Ability
+- 使用 GameplayCue 通知客户端阶段变化
+- 定期清理无效的 Observer
+
+**❌ 避免做法：**
+- 创建过深的阶段嵌套（> 4 层）
+- 在同一帧内频繁切换阶段
+- 在客户端执行阶段转换逻辑
+- 使用 IsPhaseActive 进行高频轮询
+- 硬编码阶段 Tag 字符串
 
 通过深入理解和正确使用 GamePhase 系统，开发者可以构建出结构清晰、易于维护、功能强大的游戏流程管理逻辑。
 
 ---
 
-**参考资源：**
-- Lyra 源码：`LyraGame/AbilitySystem/Phases/`
-- UE5 Gameplay Ability System 文档
-- Gameplay Tags 最佳实践
+## 参考资源
 
-**相关教程：**
-- [UE5 Lyra Experience 系统详解](#)
-- [UE5 Gameplay Ability System 深入解析](#)
-- [UE5 Gameplay Tags 完全指南](#)
+### Lyra 源码位置
+
+- **核心实现**：`LyraGame/Source/LyraGame/AbilitySystem/Phases/`
+  - `LyraGamePhaseSubsystem.h/cpp`
+  - `LyraGamePhaseAbility.h/cpp`
+  - `LyraGamePhaseLog.h`
+
+### 相关文档
+
+- [UE5 Gameplay Ability System 官方文档](https://docs.unrealengine.com/5.0/en-US/gameplay-ability-system-for-unreal-engine/)
+- [UE5 Gameplay Tags 文档](https://docs.unrealengine.com/5.0/en-US/gameplay-tags-in-unreal-engine/)
+- [UE5 World Subsystems](https://docs.unrealengine.com/5.0/en-US/world-subsystems-in-unreal-engine/)
+
+### 相关教程
+
+- [UE5 Lyra Experience 系统详解](./01-experience-system.md)
+- [UE5 Gameplay Ability System 基础](./06-gas-basics.md)
+- [UE5 Gameplay Ability System 高级应用](./07-gas-advanced.md)
+- [UE5 Lyra Team 系统](./12-team-system.md)
+
+### 社区资源
+
+- [Lyra Starter Game - Epic Games](https://www.unrealengine.com/marketplace/en-US/product/lyra)
+- [Unreal Engine Forums - Lyra Discussion](https://forums.unrealengine.com/)
+- [Unreal Slackers Discord - Lyra Channel](https://unrealslackers.org/)
+
+---
+
+**文档版本**：v1.0  
+**最后更新**：2024年2月  
+**Lyra 版本**：UE 5.3+  
+**作者**：UE5 Lyra 教程系列
+
+**字数统计**：约 10,200 字
