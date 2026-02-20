@@ -96,7 +96,7 @@
 |---|------|------|------|------|
 | 22 | 相机系统详解 | 5000-6000 | ⬜ 计划中 | - |
 | 23 | 动画系统与 Gameplay Tag 驱动 | 5000-6000 | ⬜ 计划中 | - |
-| 24 | Gameplay Cue 系统详解 | 5000-6000 | ⬜ 计划中 | - |
+| 24 | 动画系统与 Motion Matching | 9000-12000 | ✅ 已完成 | [查看](./docs/05-advanced-topics/24-animation-motion-matching.md) |
 | 25 | 音频系统与 MetaSound | 10000+ | ✅ 已完成 | [查看](./docs/05-advanced-topics/25-audio-metasound.md) |
 | 26 | Bot AI 与行为树 | 5000-6000 | ⬜ 计划中 | - |
 | 27 | Replay 系统与观战模式 | 4000-5000 | ⬜ 计划中 | - |
