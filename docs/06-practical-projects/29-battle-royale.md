@@ -1,1329 +1,206 @@
-# 实战：大逃杀模式开发
+# 实战项目：Battle Royale 大逃杀模式开发
 
-## 概述
+> **本章目标**：基于 Lyra 从零开发一个完整的 Battle Royale 大逃杀模式，包含缩圈系统、空投拾取、组队复活、观战系统和网络优化。
 
-大逃杀（Battle Royale）模式是当前最受欢迎的多人游戏玩法之一，其核心特征是：100名玩家在同一地图上竞争，最后存活者获胜。本章将详细介绍如何基于 Lyra 框架开发一个完整的大逃杀游戏模式，涵盖从游戏阶段管理到网络优化的全部内容。
+---
 
-### 核心特性
+## 📋 目录
 
-- **大规模多人对战**：支持 100 名玩家同时在线
-- **动态安全区系统**：逐渐收缩的安全区域
-- **完整游戏流程**：等待 → 飞机航线 → 跳伞 → 搜索装备 → 战斗 → 结算
-- **拾取和装备系统**：地图上随机生成的装备和道具
-- **库存和背包管理**：复杂的物品管理系统
-- **载具系统**：支持多种交通工具
-- **观战系统**：死亡后观看其他玩家
-- **性能优化**：针对大规模多人的网络和渲染优化
+1. [Battle Royale 玩法设计](#1-battle-royale-玩法设计)
+2. [安全区与缩圈系统](#2-安全区与缩圈系统)
+3. [跳伞与落地系统](#3-跳伞与落地系统)
+4. [战利品与空投系统](#4-战利品与空投系统)
+5. [组队与复活机制](#5-组队与复活机制)
+6. [倒地与救援系统](#6-倒地与救援系统)
+7. [观战系统](#7-观战系统)
+8. [100 人网络优化](#8-100-人网络优化)
+9. [完整项目集成](#9-完整项目集成)
+10. [测试与调优](#10-测试与调优)
 
-### 技术挑战
+---
 
-开发大逃杀模式需要解决以下核心技术挑战：
+## 1. Battle Royale 玩法设计
 
-1. **网络同步**：100 玩家的高效网络复制
-2. **性能优化**：大地图和大量玩家的渲染优化
-3. **游戏阶段管理**：复杂的多阶段游戏流程
-4. **公平性保证**：随机分布、平衡性调整
-5. **服务器架构**：支持多局游戏和快速匹配
+### 1.1 核心玩法定义
 
-## 一、核心架构设计
+Battle Royale（大逃杀）是一种多人生存竞技玩法：
 
-### 1.1 Experience 定义
+**核心规则**：
+- **100 名玩家**同时进入地图
+- **安全区逐渐缩小**，逼迫玩家相遇战斗
+- **拾取装备**提升战斗力
+- **最后存活的玩家或队伍**获胜
 
-首先创建大逃杀模式的 Experience 定义：
-
-**B_BattleRoyaleExperience**（Data Asset）：
-
-```cpp
-// LyraBattleRoyaleExperienceDefinition.h
-#pragma once
-
-#include "GameModes/LyraExperienceDefinition.h"
-#include "LyraBattleRoyaleExperienceDefinition.generated.h"
-
-/**
- * 大逃杀模式的 Experience 定义
- */
-UCLASS(BlueprintType)
-class ULyraBattleRoyaleExperienceDefinition : public ULyraExperienceDefinition
-{
-    GENERATED_BODY()
-
-public:
-    // 最大玩家数量
-    UPROPERTY(EditDefaultsOnly, Category = "Battle Royale")
-    int32 MaxPlayers = 100;
-
-    // 最小开始游戏人数
-    UPROPERTY(EditDefaultsOnly, Category = "Battle Royale")
-    int32 MinPlayersToStart = 50;
-
-    // 等待大厅时间（秒）
-    UPROPERTY(EditDefaultsOnly, Category = "Battle Royale")
-    float LobbyWaitTime = 60.0f;
-
-    // 飞机飞行时间（秒）
-    UPROPERTY(EditDefaultsOnly, Category = "Battle Royale")
-    float PlaneFlightDuration = 60.0f;
-
-    // 安全区配置
-    UPROPERTY(EditDefaultsOnly, Category = "Battle Royale")
-    TArray<FSafeZonePhaseConfig> SafeZonePhases;
-
-    // 战利品生成配置
-    UPROPERTY(EditDefaultsOnly, Category = "Battle Royale")
-    TSubclassOf<class ULyraBRLootSpawnConfig> LootSpawnConfig;
-};
+**关键系统**：
+```
+1. 跳伞系统 → 玩家从运输机跳下，选择降落点
+2. 战利品系统 → 地图上随机生成武器、装备、物资
+3. 安全区系统 → 定时缩圈，圈外持续扣血
+4. 空投系统 → 定期投放高级装备
+5. 组队系统 → 支持单人/双人/四人组队
+6. 倒地系统 → 队友可救援
+7. 观战系统 → 死亡后观看队友或其他玩家
+8. 排名系统 → 根据存活时间和击杀数计分
 ```
 
-### 1.2 游戏模式类
+### 1.2 技术挑战
 
-创建专门的 Battle Royale 游戏模式：
+**网络同步**：
+- 100 人同时在线，带宽压力大
+- 物品拾取需要快速响应
+- 安全区边界需要精确同步
 
-```cpp
-// LyraBattleRoyaleGameMode.h
-#pragma once
+**性能优化**：
+- 大地图渲染优化
+- 大量 Actor 管理
+- 客户端预测和插值
 
-#include "GameModes/LyraGameMode.h"
-#include "LyraBattleRoyaleGameMode.generated.h"
+**游戏平衡**：
+- 战利品分布密度
+- 安全区缩圈速度
+- 武器伤害平衡
 
-UENUM(BlueprintType)
-enum class EBattleRoyalePhase : uint8
-{
-    WaitingInLobby      UMETA(DisplayName = "Waiting in Lobby"),
-    PlaneFlying         UMETA(DisplayName = "Plane Flying"),
-    Dropping            UMETA(DisplayName = "Dropping"),
-    InProgress          UMETA(DisplayName = "In Progress"),
-    EndGame             UMETA(DisplayName = "End Game")
-};
+---
 
-/**
- * 大逃杀游戏模式
- * 管理游戏的整体流程和阶段转换
- */
-UCLASS()
-class ALyraBattleRoyaleGameMode : public ALyraGameMode
-{
-    GENERATED_BODY()
+## 2. 安全区与缩圈系统
 
-public:
-    ALyraBattleRoyaleGameMode();
+### 2.1 安全区数据定义
 
-    //~ Begin AGameModeBase Interface
-    virtual void InitGame(const FString& MapName, const FString& Options, FString& ErrorMessage) override;
-    virtual void PostLogin(APlayerController* NewPlayer) override;
-    virtual void Logout(AController* Exiting) override;
-    virtual void HandleMatchIsWaitingToStart() override;
-    virtual void HandleMatchHasStarted() override;
-    virtual bool ReadyToStartMatch_Implementation() override;
-    //~ End AGameModeBase Interface
-
-    // 获取当前游戏阶段
-    UFUNCTION(BlueprintPure, Category = "Battle Royale")
-    EBattleRoyalePhase GetCurrentPhase() const { return CurrentPhase; }
-
-    // 切换到下一个阶段
-    UFUNCTION(BlueprintCallable, Category = "Battle Royale")
-    void TransitionToPhase(EBattleRoyalePhase NewPhase);
-
-    // 玩家死亡处理
-    UFUNCTION(BlueprintCallable, Category = "Battle Royale")
-    void OnPlayerDied(AController* VictimController, AController* KillerController);
-
-    // 检查是否只剩一名玩家
-    UFUNCTION(BlueprintPure, Category = "Battle Royale")
-    bool CheckForWinner();
-
-protected:
-    // 当前游戏阶段
-    UPROPERTY(ReplicatedUsing = OnRep_CurrentPhase)
-    EBattleRoyalePhase CurrentPhase;
-
-    UFUNCTION()
-    void OnRep_CurrentPhase();
-
-    // 存活玩家数量
-    UPROPERTY(Replicated)
-    int32 AlivePlayers;
-
-    // 飞机生成点
-    UPROPERTY(EditDefaultsOnly, Category = "Battle Royale")
-    TSubclassOf<class ALyraBRPlaneActor> PlaneClass;
-
-    UPROPERTY()
-    TObjectPtr<class ALyraBRPlaneActor> CurrentPlane;
-
-    // 安全区管理器
-    UPROPERTY(EditDefaultsOnly, Category = "Battle Royale")
-    TSubclassOf<class ALyraBRSafeZoneManager> SafeZoneManagerClass;
-
-    UPROPERTY()
-    TObjectPtr<class ALyraBRSafeZoneManager> SafeZoneManager;
-
-    // 战利品生成管理器
-    UPROPERTY()
-    TObjectPtr<class ULyraBRLootSpawnSubsystem> LootSpawnSubsystem;
-
-private:
-    // 开始大厅倒计时
-    void StartLobbyCountdown();
-    
-    // 生成并启动飞机
-    void SpawnAndStartPlane();
-    
-    // 开始游戏进行阶段
-    void BeginGameplayPhase();
-    
-    // 结束游戏并宣布胜者
-    void EndGameWithWinner(APlayerState* WinnerPlayerState);
-
-    FTimerHandle LobbyCountdownTimer;
-};
-```
-
-**实现文件（LyraBattleRoyaleGameMode.cpp）**：
+创建 **Data Asset** 定义安全区配置：
 
 ```cpp
-#include "LyraBattleRoyaleGameMode.h"
-#include "LyraBattleRoyaleGameState.h"
-#include "LyraBattleRoyalePlayerState.h"
-#include "GameFramework/PlayerStart.h"
-#include "Kismet/GameplayStatics.h"
-#include "Net/UnrealNetwork.h"
-
-ALyraBattleRoyaleGameMode::ALyraBattleRoyaleGameMode()
-{
-    // 设置默认类
-    GameStateClass = ALyraBattleRoyaleGameState::StaticClass();
-    PlayerStateClass = ALyraBattleRoyalePlayerState::StaticClass();
-    
-    CurrentPhase = EBattleRoyalePhase::WaitingInLobby;
-    AlivePlayers = 0;
-    
-    // 禁用默认的重生
-    bDelayedStart = true;
-}
-
-void ALyraBattleRoyaleGameMode::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
-{
-    Super::GetLifetimeReplicatedProps(OutLifetimeProps);
-    
-    DOREPLIFETIME(ALyraBattleRoyaleGameMode, CurrentPhase);
-    DOREPLIFETIME(ALyraBattleRoyaleGameMode, AlivePlayers);
-}
-
-void ALyraBattleRoyaleGameMode::InitGame(const FString& MapName, const FString& Options, FString& ErrorMessage)
-{
-    Super::InitGame(MapName, Options, ErrorMessage);
-    
-    // 初始化战利品生成系统
-    LootSpawnSubsystem = GetWorld()->GetSubsystem<ULyraBRLootSpawnSubsystem>();
-    if (LootSpawnSubsystem)
-    {
-        LootSpawnSubsystem->Initialize();
-    }
-    
-    // 创建安全区管理器
-    if (SafeZoneManagerClass)
-    {
-        FActorSpawnParameters SpawnParams;
-        SpawnParams.Owner = this;
-        SafeZoneManager = GetWorld()->SpawnActor<ALyraBRSafeZoneManager>(
-            SafeZoneManagerClass, FVector::ZeroVector, FRotator::ZeroRotator, SpawnParams);
-    }
-}
-
-void ALyraBattleRoyaleGameMode::PostLogin(APlayerController* NewPlayer)
-{
-    Super::PostLogin(NewPlayer);
-    
-    if (CurrentPhase == EBattleRoyalePhase::WaitingInLobby)
-    {
-        AlivePlayers++;
-        
-        // 检查是否达到最小开始人数
-        ALyraBattleRoyaleGameState* BRGameState = GetGameState<ALyraBattleRoyaleGameState>();
-        if (BRGameState && AlivePlayers >= BRGameState->GetMinPlayersToStart())
-        {
-            if (!GetWorldTimerManager().IsTimerActive(LobbyCountdownTimer))
-            {
-                StartLobbyCountdown();
-            }
-        }
-        
-        // 将玩家传送到大厅出生点
-        TArray<AActor*> LobbySpawns;
-        UGameplayStatics::GetAllActorsOfClassWithTag(GetWorld(), APlayerStart::StaticClass(), 
-            FName("Lobby"), LobbySpawns);
-        
-        if (LobbySpawns.Num() > 0)
-        {
-            int32 RandomIndex = FMath::RandRange(0, LobbySpawns.Num() - 1);
-            APlayerStart* SpawnPoint = Cast<APlayerStart>(LobbySpawns[RandomIndex]);
-            if (SpawnPoint)
-            {
-                APawn* PlayerPawn = NewPlayer->GetPawn();
-                if (PlayerPawn)
-                {
-                    PlayerPawn->SetActorLocation(SpawnPoint->GetActorLocation());
-                    PlayerPawn->SetActorRotation(SpawnPoint->GetActorRotation());
-                }
-            }
-        }
-    }
-}
-
-void ALyraBattleRoyaleGameMode::Logout(AController* Exiting)
-{
-    if (CurrentPhase != EBattleRoyalePhase::EndGame)
-    {
-        AlivePlayers = FMath::Max(0, AlivePlayers - 1);
-        CheckForWinner();
-    }
-    
-    Super::Logout(Exiting);
-}
-
-bool ALyraBattleRoyaleGameMode::ReadyToStartMatch_Implementation()
-{
-    // 大逃杀模式需要手动控制开始
-    return false;
-}
-
-void ALyraBattleRoyaleGameMode::StartLobbyCountdown()
-{
-    ALyraBattleRoyaleGameState* BRGameState = GetGameState<ALyraBattleRoyaleGameState>();
-    if (!BRGameState) return;
-    
-    float LobbyWaitTime = BRGameState->GetLobbyWaitTime();
-    
-    GetWorldTimerManager().SetTimer(LobbyCountdownTimer, [this]()
-    {
-        TransitionToPhase(EBattleRoyalePhase::PlaneFlying);
-    }, LobbyWaitTime, false);
-    
-    // 通知所有客户端倒计时开始
-    BRGameState->StartLobbyCountdown(LobbyWaitTime);
-}
-
-void ALyraBattleRoyaleGameMode::TransitionToPhase(EBattleRoyalePhase NewPhase)
-{
-    if (CurrentPhase == NewPhase) return;
-    
-    CurrentPhase = NewPhase;
-    OnRep_CurrentPhase();
-    
-    ALyraBattleRoyaleGameState* BRGameState = GetGameState<ALyraBattleRoyaleGameState>();
-    if (BRGameState)
-    {
-        BRGameState->SetCurrentPhase(NewPhase);
-    }
-    
-    switch (NewPhase)
-    {
-        case EBattleRoyalePhase::PlaneFlying:
-            SpawnAndStartPlane();
-            break;
-            
-        case EBattleRoyalePhase::InProgress:
-            BeginGameplayPhase();
-            break;
-            
-        case EBattleRoyalePhase::EndGame:
-            // 游戏结束处理
-            break;
-    }
-}
-
-void ALyraBattleRoyaleGameMode::SpawnAndStartPlane()
-{
-    if (!PlaneClass) return;
-    
-    // 生成随机航线
-    FVector StartLocation, EndLocation;
-    float MapSize = 20000.0f; // 地图大小（厘米）
-    
-    // 随机选择方向
-    float Angle = FMath::RandRange(0.0f, 360.0f);
-    FVector Direction = FVector(FMath::Cos(FMath::DegreesToRadians(Angle)), 
-                                FMath::Sin(FMath::DegreesToRadians(Angle)), 0);
-    
-    StartLocation = -Direction * MapSize + FVector(0, 0, 300000); // 3km 高度
-    EndLocation = Direction * MapSize + FVector(0, 0, 300000);
-    
-    // 生成飞机
-    FActorSpawnParameters SpawnParams;
-    SpawnParams.Owner = this;
-    CurrentPlane = GetWorld()->SpawnActor<ALyraBRPlaneActor>(
-        PlaneClass, StartLocation, Direction.Rotation(), SpawnParams);
-    
-    if (CurrentPlane)
-    {
-        CurrentPlane->SetFlightPath(StartLocation, EndLocation);
-        CurrentPlane->StartFlight();
-        
-        // 飞机飞行结束后进入游戏阶段
-        ALyraBattleRoyaleGameState* BRGameState = GetGameState<ALyraBattleRoyaleGameState>();
-        float FlightDuration = BRGameState ? BRGameState->GetPlaneFlightDuration() : 60.0f;
-        
-        FTimerHandle PlaneTimer;
-        GetWorldTimerManager().SetTimer(PlaneTimer, [this]()
-        {
-            TransitionToPhase(EBattleRoyalePhase::InProgress);
-        }, FlightDuration, false);
-    }
-}
-
-void ALyraBattleRoyaleGameMode::BeginGameplayPhase()
-{
-    // 生成战利品
-    if (LootSpawnSubsystem)
-    {
-        LootSpawnSubsystem->SpawnAllLoot();
-    }
-    
-    // 启动安全区
-    if (SafeZoneManager)
-    {
-        SafeZoneManager->StartSafeZoneShrink();
-    }
-}
-
-void ALyraBattleRoyaleGameMode::OnPlayerDied(AController* VictimController, AController* KillerController)
-{
-    AlivePlayers = FMath::Max(0, AlivePlayers - 1);
-    
-    // 更新 GameState
-    ALyraBattleRoyaleGameState* BRGameState = GetGameState<ALyraBattleRoyaleGameState>();
-    if (BRGameState)
-    {
-        BRGameState->SetAlivePlayers(AlivePlayers);
-    }
-    
-    // 通知击杀信息
-    if (KillerController && VictimController)
-    {
-        APlayerState* KillerPS = KillerController->GetPlayerState<APlayerState>();
-        APlayerState* VictimPS = VictimController->GetPlayerState<APlayerState>();
-        
-        if (BRGameState && KillerPS && VictimPS)
-        {
-            BRGameState->BroadcastKillMessage(KillerPS, VictimPS);
-        }
-    }
-    
-    // 检查胜利条件
-    CheckForWinner();
-}
-
-bool ALyraBattleRoyaleGameMode::CheckForWinner()
-{
-    if (CurrentPhase == EBattleRoyalePhase::InProgress && AlivePlayers <= 1)
-    {
-        // 找到最后存活的玩家
-        for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
-        {
-            APlayerController* PC = It->Get();
-            if (PC && PC->GetPawn() && !PC->GetPawn()->IsPendingKillPending())
-            {
-                ALyraBattleRoyalePlayerState* BRPlayerState = PC->GetPlayerState<ALyraBattleRoyalePlayerState>();
-                if (BRPlayerState && BRPlayerState->IsAlive())
-                {
-                    EndGameWithWinner(BRPlayerState);
-                    return true;
-                }
-            }
-        }
-        
-        // 如果没有找到存活玩家（罕见情况），结束游戏
-        TransitionToPhase(EBattleRoyalePhase::EndGame);
-        return true;
-    }
-    
-    return false;
-}
-
-void ALyraBattleRoyaleGameMode::EndGameWithWinner(APlayerState* WinnerPlayerState)
-{
-    TransitionToPhase(EBattleRoyalePhase::EndGame);
-    
-    ALyraBattleRoyaleGameState* BRGameState = GetGameState<ALyraBattleRoyaleGameState>();
-    if (BRGameState)
-    {
-        BRGameState->SetWinner(WinnerPlayerState);
-        BRGameState->BroadcastGameEndMessage();
-    }
-}
-
-void ALyraBattleRoyaleGameMode::OnRep_CurrentPhase()
-{
-    // 可以在这里添加阶段切换时的效果
-    UE_LOG(LogTemp, Log, TEXT("Battle Royale Phase Changed: %d"), (int32)CurrentPhase);
-}
-```
-
-### 1.3 GameState 扩展
-
-```cpp
-// LyraBattleRoyaleGameState.h
-#pragma once
-
-#include "GameModes/LyraGameState.h"
-#include "LyraBattleRoyaleGameState.generated.h"
-
-USTRUCT(BlueprintType)
-struct FBRKillMessage
-{
-    GENERATED_BODY()
-
-    UPROPERTY(BlueprintReadOnly)
-    FString KillerName;
-
-    UPROPERTY(BlueprintReadOnly)
-    FString VictimName;
-
-    UPROPERTY(BlueprintReadOnly)
-    float Timestamp;
-};
-
-/**
- * 大逃杀游戏状态
- * 跟踪游戏的全局信息并复制给所有客户端
- */
-UCLASS()
-class ALyraBattleRoyaleGameState : public ALyraGameState
-{
-    GENERATED_BODY()
-
-public:
-    ALyraBattleRoyaleGameState();
-
-    //~ Begin AActor Interface
-    virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
-    virtual void BeginPlay() override;
-    //~ End AActor Interface
-
-    // 设置当前阶段
-    void SetCurrentPhase(EBattleRoyalePhase NewPhase);
-
-    // 获取当前阶段
-    UFUNCTION(BlueprintPure, Category = "Battle Royale")
-    EBattleRoyalePhase GetCurrentPhase() const { return CurrentPhase; }
-
-    // 设置存活玩家数量
-    void SetAlivePlayers(int32 Count);
-
-    UFUNCTION(BlueprintPure, Category = "Battle Royale")
-    int32 GetAlivePlayers() const { return AlivePlayers; }
-
-    // 开始大厅倒计时
-    void StartLobbyCountdown(float Duration);
-
-    UFUNCTION(BlueprintPure, Category = "Battle Royale")
-    float GetLobbyCountdownRemaining() const;
-
-    // 广播击杀消息
-    UFUNCTION(NetMulticast, Reliable)
-    void BroadcastKillMessage(APlayerState* Killer, APlayerState* Victim);
-
-    // 设置胜者
-    void SetWinner(APlayerState* Winner);
-
-    UFUNCTION(BlueprintPure, Category = "Battle Royale")
-    APlayerState* GetWinner() const { return WinnerPlayerState; }
-
-    // 广播游戏结束消息
-    UFUNCTION(NetMulticast, Reliable)
-    void BroadcastGameEndMessage();
-
-    // 获取配置参数
-    int32 GetMinPlayersToStart() const { return MinPlayersToStart; }
-    float GetLobbyWaitTime() const { return LobbyWaitTime; }
-    float GetPlaneFlightDuration() const { return PlaneFlightDuration; }
-
-protected:
-    // 当前游戏阶段
-    UPROPERTY(ReplicatedUsing = OnRep_CurrentPhase, BlueprintReadOnly)
-    EBattleRoyalePhase CurrentPhase;
-
-    UFUNCTION()
-    void OnRep_CurrentPhase();
-
-    // 存活玩家数量
-    UPROPERTY(ReplicatedUsing = OnRep_AlivePlayers, BlueprintReadOnly)
-    int32 AlivePlayers;
-
-    UFUNCTION()
-    void OnRep_AlivePlayers();
-
-    // 大厅倒计时
-    UPROPERTY(Replicated, BlueprintReadOnly)
-    float LobbyCountdownStartTime;
-
-    UPROPERTY(Replicated, BlueprintReadOnly)
-    float LobbyCountdownDuration;
-
-    // 胜者
-    UPROPERTY(Replicated, BlueprintReadOnly)
-    TObjectPtr<APlayerState> WinnerPlayerState;
-
-    // 最近的击杀消息
-    UPROPERTY(Replicated, BlueprintReadOnly)
-    TArray<FBRKillMessage> RecentKills;
-
-    // 配置参数
-    UPROPERTY(EditDefaultsOnly, Category = "Battle Royale")
-    int32 MinPlayersToStart = 50;
-
-    UPROPERTY(EditDefaultsOnly, Category = "Battle Royale")
-    float LobbyWaitTime = 60.0f;
-
-    UPROPERTY(EditDefaultsOnly, Category = "Battle Royale")
-    float PlaneFlightDuration = 60.0f;
-
-public:
-    // 事件委托
-    DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnPhaseChanged, EBattleRoyalePhase, NewPhase);
-    UPROPERTY(BlueprintAssignable, Category = "Battle Royale")
-    FOnPhaseChanged OnPhaseChanged;
-
-    DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnKillBroadcast, const FString&, KillerName, const FString&, VictimName);
-    UPROPERTY(BlueprintAssignable, Category = "Battle Royale")
-    FOnKillBroadcast OnKillBroadcast;
-};
-```
-
-**实现文件（LyraBattleRoyaleGameState.cpp）**：
-
-```cpp
-#include "LyraBattleRoyaleGameState.h"
-#include "Net/UnrealNetwork.h"
-#include "GameFramework/PlayerState.h"
-
-ALyraBattleRoyaleGameState::ALyraBattleRoyaleGameState()
-{
-    CurrentPhase = EBattleRoyalePhase::WaitingInLobby;
-    AlivePlayers = 0;
-    LobbyCountdownStartTime = 0.0f;
-    LobbyCountdownDuration = 0.0f;
-}
-
-void ALyraBattleRoyaleGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
-{
-    Super::GetLifetimeReplicatedProps(OutLifetimeProps);
-    
-    DOREPLIFETIME(ALyraBattleRoyaleGameState, CurrentPhase);
-    DOREPLIFETIME(ALyraBattleRoyaleGameState, AlivePlayers);
-    DOREPLIFETIME(ALyraBattleRoyaleGameState, LobbyCountdownStartTime);
-    DOREPLIFETIME(ALyraBattleRoyaleGameState, LobbyCountdownDuration);
-    DOREPLIFETIME(ALyraBattleRoyaleGameState, WinnerPlayerState);
-    DOREPLIFETIME(ALyraBattleRoyaleGameState, RecentKills);
-}
-
-void ALyraBattleRoyaleGameState::BeginPlay()
-{
-    Super::BeginPlay();
-}
-
-void ALyraBattleRoyaleGameState::SetCurrentPhase(EBattleRoyalePhase NewPhase)
-{
-    if (HasAuthority())
-    {
-        CurrentPhase = NewPhase;
-        OnRep_CurrentPhase();
-    }
-}
-
-void ALyraBattleRoyaleGameState::OnRep_CurrentPhase()
-{
-    OnPhaseChanged.Broadcast(CurrentPhase);
-}
-
-void ALyraBattleRoyaleGameState::SetAlivePlayers(int32 Count)
-{
-    if (HasAuthority())
-    {
-        AlivePlayers = Count;
-    }
-}
-
-void ALyraBattleRoyaleGameState::OnRep_AlivePlayers()
-{
-    // 可以在这里触发 UI 更新
-}
-
-void ALyraBattleRoyaleGameState::StartLobbyCountdown(float Duration)
-{
-    if (HasAuthority())
-    {
-        LobbyCountdownStartTime = GetServerWorldTimeSeconds();
-        LobbyCountdownDuration = Duration;
-    }
-}
-
-float ALyraBattleRoyaleGameState::GetLobbyCountdownRemaining() const
-{
-    if (LobbyCountdownDuration <= 0.0f) return 0.0f;
-    
-    float Elapsed = GetServerWorldTimeSeconds() - LobbyCountdownStartTime;
-    return FMath::Max(0.0f, LobbyCountdownDuration - Elapsed);
-}
-
-void ALyraBattleRoyaleGameState::BroadcastKillMessage_Implementation(APlayerState* Killer, APlayerState* Victim)
-{
-    if (!Killer || !Victim) return;
-    
-    FBRKillMessage KillMsg;
-    KillMsg.KillerName = Killer->GetPlayerName();
-    KillMsg.VictimName = Victim->GetPlayerName();
-    KillMsg.Timestamp = GetServerWorldTimeSeconds();
-    
-    RecentKills.Add(KillMsg);
-    
-    // 只保留最近 10 条
-    if (RecentKills.Num() > 10)
-    {
-        RecentKills.RemoveAt(0);
-    }
-    
-    OnKillBroadcast.Broadcast(KillMsg.KillerName, KillMsg.VictimName);
-}
-
-void ALyraBattleRoyaleGameState::SetWinner(APlayerState* Winner)
-{
-    if (HasAuthority())
-    {
-        WinnerPlayerState = Winner;
-    }
-}
-
-void ALyraBattleRoyaleGameState::BroadcastGameEndMessage_Implementation()
-{
-    // 在客户端显示游戏结束界面
-    UE_LOG(LogTemp, Log, TEXT("Game Ended! Winner: %s"), 
-           WinnerPlayerState ? *WinnerPlayerState->GetPlayerName() : TEXT("None"));
-}
-```
-
-## 二、飞机和跳伞系统
-
-### 2.1 飞机 Actor
-
-```cpp
-// LyraBRPlaneActor.h
+// BRSafeZoneData.h
 #pragma once
 
 #include "CoreMinimal.h"
-#include "GameFramework/Actor.h"
-#include "LyraBRPlaneActor.generated.h"
+#include "Engine/DataAsset.h"
+#include "BRSafeZoneData.generated.h"
 
-/**
- * 大逃杀飞机 Actor
- * 负责运输玩家并允许他们跳伞
- */
-UCLASS()
-class ALyraBRPlaneActor : public AActor
-{
-    GENERATED_BODY()
-
-public:
-    ALyraBRPlaneActor();
-
-    virtual void Tick(float DeltaTime) override;
-    virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
-
-    // 设置飞行路径
-    void SetFlightPath(const FVector& Start, const FVector& End);
-
-    // 开始飞行
-    UFUNCTION(BlueprintCallable, Category = "Battle Royale")
-    void StartFlight();
-
-    // 玩家跳伞
-    UFUNCTION(Server, Reliable, BlueprintCallable, Category = "Battle Royale")
-    void PlayerJump(APlayerController* PlayerController);
-
-    // 是否允许跳伞
-    UFUNCTION(BlueprintPure, Category = "Battle Royale")
-    bool CanPlayersJump() const { return bCanPlayersJump; }
-
-protected:
-    virtual void BeginPlay() override;
-
-    // 飞机网格体
-    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
-    TObjectPtr<UStaticMeshComponent> PlaneMesh;
-
-    // 飞行起点和终点
-    UPROPERTY(Replicated)
-    FVector FlightStart;
-
-    UPROPERTY(Replicated)
-    FVector FlightEnd;
-
-    // 飞行参数
-    UPROPERTY(EditDefaultsOnly, Category = "Flight")
-    float FlightSpeed = 5000.0f; // cm/s
-
-    UPROPERTY(Replicated)
-    bool bIsFlying;
-
-    UPROPERTY(Replicated)
-    bool bCanPlayersJump;
-
-    UPROPERTY(Replicated)
-    float FlightStartTime;
-
-    // 飞机上的玩家列表
-    UPROPERTY(Replicated)
-    TArray<TObjectPtr<APlayerController>> PlayersOnPlane;
-
-private:
-    void UpdateFlightPosition(float DeltaTime);
-    void EjectPlayer(APlayerController* PlayerController, const FVector& EjectLocation);
-};
-```
-
-**实现文件（LyraBRPlaneActor.cpp）**：
-
-```cpp
-#include "LyraBRPlaneActor.h"
-#include "Net/UnrealNetwork.h"
-#include "GameFramework/PlayerController.h"
-#include "GameFramework/Character.h"
-#include "Components/StaticMeshComponent.h"
-
-ALyraBRPlaneActor::ALyraBRPlaneActor()
-{
-    PrimaryActorTick.bCanEverTick = true;
-    bReplicates = true;
-    bAlwaysRelevant = true;
-
-    // 创建飞机网格体
-    PlaneMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("PlaneMesh"));
-    RootComponent = PlaneMesh;
-    PlaneMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-
-    bIsFlying = false;
-    bCanPlayersJump = false;
-    FlightStartTime = 0.0f;
-}
-
-void ALyraBRPlaneActor::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
-{
-    Super::GetLifetimeReplicatedProps(OutLifetimeProps);
-
-    DOREPLIFETIME(ALyraBRPlaneActor, FlightStart);
-    DOREPLIFETIME(ALyraBRPlaneActor, FlightEnd);
-    DOREPLIFETIME(ALyraBRPlaneActor, bIsFlying);
-    DOREPLIFETIME(ALyraBRPlaneActor, bCanPlayersJump);
-    DOREPLIFETIME(ALyraBRPlaneActor, FlightStartTime);
-    DOREPLIFETIME(ALyraBRPlaneActor, PlayersOnPlane);
-}
-
-void ALyraBRPlaneActor::BeginPlay()
-{
-    Super::BeginPlay();
-}
-
-void ALyraBRPlaneActor::Tick(float DeltaTime)
-{
-    Super::Tick(DeltaTime);
-
-    if (HasAuthority() && bIsFlying)
-    {
-        UpdateFlightPosition(DeltaTime);
-    }
-}
-
-void ALyraBRPlaneActor::SetFlightPath(const FVector& Start, const FVector& End)
-{
-    if (HasAuthority())
-    {
-        FlightStart = Start;
-        FlightEnd = End;
-    }
-}
-
-void ALyraBRPlaneActor::StartFlight()
-{
-    if (HasAuthority())
-    {
-        bIsFlying = true;
-        bCanPlayersJump = true;
-        FlightStartTime = GetWorld()->GetTimeSeconds();
-
-        // 设置初始位置
-        SetActorLocation(FlightStart);
-        SetActorRotation((FlightEnd - FlightStart).Rotation());
-
-        // 收集所有活着的玩家
-        for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
-        {
-            APlayerController* PC = It->Get();
-            if (PC && PC->GetPawn())
-            {
-                PlayersOnPlane.Add(PC);
-                
-                // 禁用玩家控制，附加到飞机
-                PC->SetIgnoreMoveInput(true);
-                PC->GetPawn()->AttachToActor(this, FAttachmentTransformRules::KeepWorldTransform);
-                PC->GetPawn()->SetActorHiddenInGame(true); // 在飞机上时隐藏玩家
-            }
-        }
-    }
-}
-
-void ALyraBRPlaneActor::UpdateFlightPosition(float DeltaTime)
-{
-    float ElapsedTime = GetWorld()->GetTimeSeconds() - FlightStartTime;
-    FVector Direction = (FlightEnd - FlightStart).GetSafeNormal();
-    float DistanceTraveled = ElapsedTime * FlightSpeed;
-
-    FVector NewLocation = FlightStart + Direction * DistanceTraveled;
-    SetActorLocation(NewLocation);
-
-    // 检查是否到达终点
-    float TotalDistance = FVector::Dist(FlightStart, FlightEnd);
-    if (DistanceTraveled >= TotalDistance)
-    {
-        // 强制所有剩余玩家跳伞
-        TArray<APlayerController*> RemainingPlayers = PlayersOnPlane;
-        for (APlayerController* PC : RemainingPlayers)
-        {
-            if (PC)
-            {
-                PlayerJump(PC);
-            }
-        }
-
-        bIsFlying = false;
-        bCanPlayersJump = false;
-
-        // 销毁飞机
-        Destroy();
-    }
-}
-
-void ALyraBRPlaneActor::PlayerJump_Implementation(APlayerController* PlayerController)
-{
-    if (!HasAuthority() || !PlayerController || !bCanPlayersJump) return;
-
-    if (PlayersOnPlane.Contains(PlayerController))
-    {
-        PlayersOnPlane.Remove(PlayerController);
-
-        APawn* PlayerPawn = PlayerController->GetPawn();
-        if (PlayerPawn)
-        {
-            // 分离玩家
-            PlayerPawn->DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
-            PlayerPawn->SetActorHiddenInGame(false);
-
-            // 设置跳伞位置（飞机后方稍微偏移）
-            FVector EjectLocation = GetActorLocation() - GetActorForwardVector() * 500.0f;
-            EjectPlayer(PlayerController, EjectLocation);
-        }
-    }
-}
-
-void ALyraBRPlaneActor::EjectPlayer(APlayerController* PlayerController, const FVector& EjectLocation)
-{
-    APawn* PlayerPawn = PlayerController->GetPawn();
-    if (!PlayerPawn) return;
-
-    // 设置位置
-    PlayerPawn->SetActorLocation(EjectLocation);
-
-    // 恢复玩家控制
-    PlayerController->SetIgnoreMoveInput(false);
-
-    // 给予初始速度（向下和向前）
-    if (UPrimitiveComponent* RootPrimitive = Cast<UPrimitiveComponent>(PlayerPawn->GetRootComponent()))
-    {
-        FVector InitialVelocity = GetActorForwardVector() * FlightSpeed * 0.5f + FVector(0, 0, -1000.0f);
-        RootPrimitive->SetPhysicsLinearVelocity(InitialVelocity);
-    }
-
-    // 启用跳伞状态（通过 GameplayTag 或自定义组件）
-    // 这里需要与你的角色系统集成
-}
-```
-
-### 2.2 跳伞状态组件
-
-```cpp
-// LyraBRParachuteComponent.h
-#pragma once
-
-#include "Components/ActorComponent.h"
-#include "GameplayTagContainer.h"
-#include "LyraBRParachuteComponent.generated.h"
-
-/**
- * 跳伞组件
- * 处理玩家的跳伞和降落逻辑
- */
-UCLASS(ClassGroup=(Custom), meta=(BlueprintSpawnableComponent))
-class ULyraBRParachuteComponent : public UActorComponent
-{
-    GENERATED_BODY()
-
-public:
-    ULyraBRParachuteComponent();
-
-    virtual void TickComponent(float DeltaTime, ELevelTick TickType, 
-                              FActorComponentTickFunction* ThisTickFunction) override;
-
-    // 打开降落伞
-    UFUNCTION(BlueprintCallable, Category = "Parachute")
-    void OpenParachute();
-
-    // 关闭降落伞
-    UFUNCTION(BlueprintCallable, Category = "Parachute")
-    void CloseParachute();
-
-    // 是否正在跳伞
-    UFUNCTION(BlueprintPure, Category = "Parachute")
-    bool IsParachuteOpen() const { return bParachuteOpen; }
-
-protected:
-    virtual void BeginPlay() override;
-
-    // 降落伞网格体
-    UPROPERTY(EditDefaultsOnly, Category = "Parachute")
-    TObjectPtr<UStaticMeshComponent> ParachuteMesh;
-
-    // 降落伞参数
-    UPROPERTY(EditDefaultsOnly, Category = "Parachute")
-    float ParachuteDragCoefficient = 0.95f;
-
-    UPROPERTY(EditDefaultsOnly, Category = "Parachute")
-    float MaxFallSpeed = 500.0f;
-
-    UPROPERTY(EditDefaultsOnly, Category = "Parachute")
-    float ForwardSpeedMultiplier = 800.0f;
-
-    UPROPERTY(EditDefaultsOnly, Category = "Parachute")
-    float MinHeightToOpen = 50000.0f; // 500 米
-
-    UPROPERTY(EditDefaultsOnly, Category = "Parachute")
-    float AutoOpenHeight = 20000.0f; // 200 米自动开伞
-
-    UPROPERTY(Replicated)
-    bool bParachuteOpen;
-
-    UPROPERTY(Replicated)
-    bool bFreeFalling;
-
-private:
-    void ApplyParachutePhysics(float DeltaTime);
-    void CheckAutoOpen();
-};
-```
-
-**实现文件（LyraBRParachuteComponent.cpp）**：
-
-```cpp
-#include "LyraBRParachuteComponent.h"
-#include "GameFramework/Character.h"
-#include "GameFramework/CharacterMovementComponent.h"
-#include "Components/StaticMeshComponent.h"
-#include "Net/UnrealNetwork.h"
-
-ULyraBRParachuteComponent::ULyraBRParachuteComponent()
-{
-    PrimaryComponentTick.bCanEverTick = true;
-    SetIsReplicatedByDefault(true);
-
-    bParachuteOpen = false;
-    bFreeFalling = true;
-}
-
-void ULyraBRParachuteComponent::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
-{
-    Super::GetLifetimeReplicatedProps(OutLifetimeProps);
-
-    DOREPLIFETIME(ULyraBRParachuteComponent, bParachuteOpen);
-    DOREPLIFETIME(ULyraBRParachuteComponent, bFreeFalling);
-}
-
-void ULyraBRParachuteComponent::BeginPlay()
-{
-    Super::BeginPlay();
-
-    // 创建降落伞网格体
-    ACharacter* OwnerCharacter = Cast<ACharacter>(GetOwner());
-    if (OwnerCharacter)
-    {
-        ParachuteMesh = NewObject<UStaticMeshComponent>(OwnerCharacter, TEXT("ParachuteMesh"));
-        ParachuteMesh->RegisterComponent();
-        ParachuteMesh->AttachToComponent(OwnerCharacter->GetMesh(), 
-            FAttachmentTransformRules::SnapToTargetIncludingScale, TEXT("ParachuteSocket"));
-        ParachuteMesh->SetVisibility(false);
-    }
-}
-
-void ULyraBRParachuteComponent::TickComponent(float DeltaTime, ELevelTick TickType,
-                                             FActorComponentTickFunction* ThisTickFunction)
-{
-    Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
-
-    ACharacter* OwnerCharacter = Cast<ACharacter>(GetOwner());
-    if (!OwnerCharacter) return;
-
-    // 检查是否在空中
-    UCharacterMovementComponent* MovementComp = OwnerCharacter->GetCharacterMovement();
-    if (!MovementComp) return;
-
-    bFreeFalling = MovementComp->IsFalling();
-
-    if (bFreeFalling)
-    {
-        CheckAutoOpen();
-
-        if (bParachuteOpen)
-        {
-            ApplyParachutePhysics(DeltaTime);
-        }
-    }
-    else if (bParachuteOpen)
-    {
-        // 着陆后自动关闭降落伞
-        CloseParachute();
-    }
-}
-
-void ULyraBRParachuteComponent::OpenParachute()
-{
-    if (bParachuteOpen || !bFreeFalling) return;
-
-    ACharacter* OwnerCharacter = Cast<ACharacter>(GetOwner());
-    if (!OwnerCharacter) return;
-
-    // 检查高度
-    FVector Location = OwnerCharacter->GetActorLocation();
-    FHitResult HitResult;
-    FVector TraceEnd = Location - FVector(0, 0, 100000.0f);
-    
-    if (GetWorld()->LineTraceSingleByChannel(HitResult, Location, TraceEnd, ECC_Visibility))
-    {
-        float HeightAboveGround = Location.Z - HitResult.Location.Z;
-        if (HeightAboveGround < MinHeightToOpen)
-        {
-            return; // 太低无法开伞
-        }
-    }
-
-    bParachuteOpen = true;
-
-    if (ParachuteMesh)
-    {
-        ParachuteMesh->SetVisibility(true);
-    }
-
-    // 修改移动模式
-    UCharacterMovementComponent* MovementComp = OwnerCharacter->GetCharacterMovement();
-    if (MovementComp)
-    {
-        MovementComp->GravityScale = 0.3f;
-        MovementComp->AirControl = 0.8f;
-    }
-}
-
-void ULyraBRParachuteComponent::CloseParachute()
-{
-    if (!bParachuteOpen) return;
-
-    bParachuteOpen = false;
-
-    if (ParachuteMesh)
-    {
-        ParachuteMesh->SetVisibility(false);
-    }
-
-    // 恢复正常移动
-    ACharacter* OwnerCharacter = Cast<ACharacter>(GetOwner());
-    if (OwnerCharacter)
-    {
-        UCharacterMovementComponent* MovementComp = OwnerCharacter->GetCharacterMovement();
-        if (MovementComp)
-        {
-            MovementComp->GravityScale = 1.0f;
-            MovementComp->AirControl = 0.05f;
-        }
-    }
-}
-
-void ULyraBRParachuteComponent::ApplyParachutePhysics(float DeltaTime)
-{
-    ACharacter* OwnerCharacter = Cast<ACharacter>(GetOwner());
-    if (!OwnerCharacter) return;
-
-    UCharacterMovementComponent* MovementComp = OwnerCharacter->GetCharacterMovement();
-    if (!MovementComp) return;
-
-    FVector Velocity = MovementComp->Velocity;
-
-    // 限制下降速度
-    if (Velocity.Z < -MaxFallSpeed)
-    {
-        Velocity.Z = FMath::Lerp(Velocity.Z, -MaxFallSpeed, ParachuteDragCoefficient * DeltaTime);
-    }
-
-    // 应用水平控制
-    FVector InputVector = OwnerCharacter->GetLastMovementInputVector();
-    if (!InputVector.IsNearlyZero())
-    {
-        FVector HorizontalVelocity = FVector(Velocity.X, Velocity.Y, 0);
-        HorizontalVelocity += InputVector * ForwardSpeedMultiplier * DeltaTime;
-        HorizontalVelocity = HorizontalVelocity.GetClampedToMaxSize(ForwardSpeedMultiplier);
-        
-        Velocity.X = HorizontalVelocity.X;
-        Velocity.Y = HorizontalVelocity.Y;
-    }
-
-    MovementComp->Velocity = Velocity;
-}
-
-void ULyraBRParachuteComponent::CheckAutoOpen()
-{
-    if (bParachuteOpen) return;
-
-    ACharacter* OwnerCharacter = Cast<ACharacter>(GetOwner());
-    if (!OwnerCharacter) return;
-
-    FVector Location = OwnerCharacter->GetActorLocation();
-    FHitResult HitResult;
-    FVector TraceEnd = Location - FVector(0, 0, 100000.0f);
-    
-    if (GetWorld()->LineTraceSingleByChannel(HitResult, Location, TraceEnd, ECC_Visibility))
-    {
-        float HeightAboveGround = Location.Z - HitResult.Location.Z;
-        if (HeightAboveGround <= AutoOpenHeight)
-        {
-            OpenParachute();
-        }
-    }
-}
-```
-
-## 三、安全区系统
-
-### 3.1 安全区管理器
-
-```cpp
-// LyraBRSafeZoneManager.h
-#pragma once
-
-#include "GameFramework/Actor.h"
-#include "LyraBRSafeZoneManager.generated.h"
-
+// 单个缩圈阶段配置
 USTRUCT(BlueprintType)
-struct FSafeZonePhaseConfig
+struct FBRSafeZonePhase
 {
     GENERATED_BODY()
 
-    // 阶段持续时间（秒）
-    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly)
-    float Duration = 180.0f;
+    // 该阶段圈的半径（cm）
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "SafeZone")
+    float Radius = 50000.0f;
 
-    // 收缩到的半径（厘米）
-    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly)
-    float Radius = 500000.0f;
+    // 缩圈持续时间（秒）
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "SafeZone")
+    float ShrinkDuration = 120.0f;
 
-    // 每秒伤害
-    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly)
-    float DamagePerSecond = 1.0f;
+    // 安全期（圈停止后的等待时间）
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "SafeZone")
+    float SafeDuration = 60.0f;
+
+    // 圈外每秒伤害
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "SafeZone")
+    float DamagePerSecond = 5.0f;
+
+    // 伤害类型（GameplayEffect）
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "SafeZone")
+    TSubclassOf<class UGameplayEffect> DamageEffect;
 };
 
-/**
- * 安全区管理器
- * 控制安全区的收缩和伤害
- */
-UCLASS()
-class ALyraBRSafeZoneManager : public AActor
+UCLASS(BlueprintType)
+class BATTLEROYALEPROJECT_API UBRSafeZoneData : public UPrimaryDataAsset
 {
     GENERATED_BODY()
 
 public:
-    ALyraBRSafeZoneManager();
+    // 所有缩圈阶段
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "SafeZone")
+    TArray<FBRSafeZonePhase> Phases;
 
-    virtual void Tick(float DeltaTime) override;
-    virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+    // 初始安全区半径
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "SafeZone")
+    float InitialRadius = 100000.0f;
 
-    // 开始安全区收缩
-    UFUNCTION(BlueprintCallable, Category = "Safe Zone")
-    void StartSafeZoneShrink();
+    // 地图中心点（如果为零则随机）
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "SafeZone")
+    FVector MapCenter = FVector::ZeroVector;
 
-    // 获取当前安全区中心
-    UFUNCTION(BlueprintPure, Category = "Safe Zone")
-    FVector GetCurrentCenter() const { return CurrentCenter; }
+    // 最大随机偏移（最终圈随机位置）
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "SafeZone")
+    float MaxCenterOffset = 50000.0f;
+};
+```
 
-    // 获取当前安全区半径
-    UFUNCTION(BlueprintPure, Category = "Safe Zone")
-    float GetCurrentRadius() const { return CurrentRadius; }
+### 2.2 安全区管理器
 
-    // 获取目标安全区中心
-    UFUNCTION(BlueprintPure, Category = "Safe Zone")
-    FVector GetTargetCenter() const { return TargetCenter; }
+创建 **GameStateComponent** 管理安全区：
 
-    // 获取目标安全区半径
-    UFUNCTION(BlueprintPure, Category = "Safe Zone")
-    float GetTargetRadius() const { return TargetRadius; }
+```cpp
+// BRSafeZoneManagerComponent.h
+#pragma once
 
-    // 检查位置是否在安全区内
-    UFUNCTION(BlueprintPure, Category = "Safe Zone")
-    bool IsLocationSafe(const FVector& Location) const;
+#include "CoreMinimal.h"
+#include "Components/GameStateComponent.h"
+#include "BRSafeZoneData.h"
+#include "BRSafeZoneManagerComponent.generated.h"
 
-protected:
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnSafeZoneUpdated, FVector, NewCenter, float, NewRadius);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnPhaseChanged, int32, PhaseIndex);
+
+UCLASS(BlueprintType, ClassGroup = (BattleRoyale))
+class BATTLEROYALEPROJECT_API UBRSafeZoneManagerComponent : public UGameStateComponent
+{
+    GENERATED_BODY()
+
+public:
+    UBRSafeZoneManagerComponent(const FObjectInitializer& ObjectInitializer);
+
     virtual void BeginPlay() override;
+    virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 
-    // 安全区阶段配置
-    UPROPERTY(EditDefaultsOnly, Category = "Safe Zone")
-    TArray<FSafeZonePhaseConfig> PhaseConfigs;
+    // 初始化安全区
+    UFUNCTION(BlueprintCallable, Category = "SafeZone")
+    void InitializeSafeZone(UBRSafeZoneData* InSafeZoneData);
 
-    // 当前阶段索引
-    UPROPERTY(Replicated)
-    int32 CurrentPhaseIndex;
+    // 手动触发下一阶段（测试用）
+    UFUNCTION(BlueprintCallable, Category = "SafeZone")
+    void ForceNextPhase();
 
-    // 当前安全区参数
-    UPROPERTY(ReplicatedUsing = OnRep_CurrentCenter)
+    // 查询点是否在安全区内
+    UFUNCTION(BlueprintPure, Category = "SafeZone")
+    bool IsLocationInSafeZone(FVector Location) const;
+
+    // 获取到安全区中心的距离
+    UFUNCTION(BlueprintPure, Category = "SafeZone")
+    float GetDistanceToSafeZoneCenter(FVector Location) const;
+
+    // 广播事件
+    UPROPERTY(BlueprintAssignable, Category = "SafeZone")
+    FOnSafeZoneUpdated OnSafeZoneUpdated;
+
+    UPROPERTY(BlueprintAssignable, Category = "SafeZone")
+    FOnPhaseChanged OnPhaseChanged;
+
+    // 当前安全区状态（Replicated）
+    UPROPERTY(ReplicatedUsing = OnRep_CurrentCenter, BlueprintReadOnly, Category = "SafeZone")
     FVector CurrentCenter;
 
-    UPROPERTY(ReplicatedUsing = OnRep_CurrentRadius)
+    UPROPERTY(ReplicatedUsing = OnRep_CurrentRadius, BlueprintReadOnly, Category = "SafeZone")
     float CurrentRadius;
 
-    // 目标安全区参数
-    UPROPERTY(Replicated)
+    UPROPERTY(ReplicatedUsing = OnRep_TargetCenter, BlueprintReadOnly, Category = "SafeZone")
     FVector TargetCenter;
 
-    UPROPERTY(Replicated)
+    UPROPERTY(ReplicatedUsing = OnRep_TargetRadius, BlueprintReadOnly, Category = "SafeZone")
     float TargetRadius;
 
-    // 阶段开始时间
-    UPROPERTY(Replicated)
-    float PhaseStartTime;
+    UPROPERTY(Replicated, BlueprintReadOnly, Category = "SafeZone")
+    int32 CurrentPhaseIndex = -1;
 
-    // 是否正在收缩
-    UPROPERTY(Replicated)
-    bool bIsShrinking;
+    UPROPERTY(Replicated, BlueprintReadOnly, Category = "SafeZone")
+    float PhaseTimeRemaining = 0.0f;
 
-    // 当前阶段伤害
-    UPROPERTY(Replicated)
-    float CurrentDamagePerSecond;
+    UPROPERTY(Replicated, BlueprintReadOnly, Category = "SafeZone")
+    bool bIsShrinking = false;
 
-    // 可视化组件
-    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
-    TObjectPtr<UStaticMeshComponent> SafeZoneVisualization;
-
-    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
-    TObjectPtr<UStaticMeshComponent> TargetZoneVisualization;
-
-private:
-    void StartNextPhase();
-    void UpdateSafeZone(float DeltaTime);
-    void ApplyDamageToPlayersOutside();
-    FVector CalculateRandomCenterInCircle(const FVector& OldCenter, float OldRadius, float NewRadius);
+protected:
+    virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
     UFUNCTION()
     void OnRep_CurrentCenter();
@@ -1331,1521 +208,1986 @@ private:
     UFUNCTION()
     void OnRep_CurrentRadius();
 
-    FTimerHandle DamageTimerHandle;
+    UFUNCTION()
+    void OnRep_TargetCenter();
+
+    UFUNCTION()
+    void OnRep_TargetRadius();
+
+private:
+    UPROPERTY()
+    UBRSafeZoneData* SafeZoneData;
+
+    float PhaseTimer = 0.0f;
+
+    void StartNextPhase();
+    void UpdateShrinkingZone(float DeltaTime);
+    FVector GenerateRandomCenter(FVector PreviousCenter, float MaxRadius) const;
 };
 ```
 
-**实现文件（LyraBRSafeZoneManager.cpp）**：
+**实现缩圈逻辑**：
 
 ```cpp
-#include "LyraBRSafeZoneManager.h"
-#include "Components/StaticMeshComponent.h"
+// BRSafeZoneManagerComponent.cpp
+#include "BRSafeZoneManagerComponent.h"
 #include "Net/UnrealNetwork.h"
-#include "GameFramework/Character.h"
-#include "LyraHealthComponent.h"
 #include "Kismet/GameplayStatics.h"
 
-ALyraBRSafeZoneManager::ALyraBRSafeZoneManager()
+UBRSafeZoneManagerComponent::UBRSafeZoneManagerComponent(const FObjectInitializer& ObjectInitializer)
+    : Super(ObjectInitializer)
 {
-    PrimaryActorTick.bCanEverTick = true;
-    bReplicates = true;
-    bAlwaysRelevant = true;
-
-    // 创建可视化组件
-    SafeZoneVisualization = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("SafeZoneVisualization"));
-    RootComponent = SafeZoneVisualization;
-    SafeZoneVisualization->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-
-    TargetZoneVisualization = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("TargetZoneVisualization"));
-    TargetZoneVisualization->SetupAttachment(RootComponent);
-    TargetZoneVisualization->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-
-    CurrentPhaseIndex = -1;
-    CurrentRadius = 1000000.0f; // 初始半径 10km
-    CurrentCenter = FVector::ZeroVector;
-    bIsShrinking = false;
+    SetIsReplicatedByDefault(true);
+    PrimaryComponentTick.bCanEverTick = true;
+    PrimaryComponentTick.bStartWithTickEnabled = false;
 }
 
-void ALyraBRSafeZoneManager::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+void UBRSafeZoneManagerComponent::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
     Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 
-    DOREPLIFETIME(ALyraBRSafeZoneManager, CurrentPhaseIndex);
-    DOREPLIFETIME(ALyraBRSafeZoneManager, CurrentCenter);
-    DOREPLIFETIME(ALyraBRSafeZoneManager, CurrentRadius);
-    DOREPLIFETIME(ALyraBRSafeZoneManager, TargetCenter);
-    DOREPLIFETIME(ALyraBRSafeZoneManager, TargetRadius);
-    DOREPLIFETIME(ALyraBRSafeZoneManager, PhaseStartTime);
-    DOREPLIFETIME(ALyraBRSafeZoneManager, bIsShrinking);
-    DOREPLIFETIME(ALyraBRSafeZoneManager, CurrentDamagePerSecond);
+    DOREPLIFETIME(UBRSafeZoneManagerComponent, CurrentCenter);
+    DOREPLIFETIME(UBRSafeZoneManagerComponent, CurrentRadius);
+    DOREPLIFETIME(UBRSafeZoneManagerComponent, TargetCenter);
+    DOREPLIFETIME(UBRSafeZoneManagerComponent, TargetRadius);
+    DOREPLIFETIME(UBRSafeZoneManagerComponent, CurrentPhaseIndex);
+    DOREPLIFETIME(UBRSafeZoneManagerComponent, PhaseTimeRemaining);
+    DOREPLIFETIME(UBRSafeZoneManagerComponent, bIsShrinking);
 }
 
-void ALyraBRSafeZoneManager::BeginPlay()
+void UBRSafeZoneManagerComponent::BeginPlay()
 {
     Super::BeginPlay();
-
-    // 设置初始位置（地图中心）
-    SetActorLocation(FVector::ZeroVector);
 }
 
-void ALyraBRSafeZoneManager::Tick(float DeltaTime)
+void UBRSafeZoneManagerComponent::InitializeSafeZone(UBRSafeZoneData* InSafeZoneData)
 {
-    Super::Tick(DeltaTime);
-
-    if (HasAuthority() && bIsShrinking)
+    if (!GetOwner()->HasAuthority())
     {
-        UpdateSafeZone(DeltaTime);
+        return; // 只在服务器执行
     }
-}
 
-void ALyraBRSafeZoneManager::StartSafeZoneShrink()
-{
-    if (!HasAuthority() || PhaseConfigs.Num() == 0) return;
-
-    bIsShrinking = true;
-    StartNextPhase();
-
-    // 启动伤害计时器
-    GetWorldTimerManager().SetTimer(DamageTimerHandle, this, 
-        &ALyraBRSafeZoneManager::ApplyDamageToPlayersOutside, 1.0f, true);
-}
-
-void ALyraBRSafeZoneManager::StartNextPhase()
-{
-    CurrentPhaseIndex++;
-
-    if (CurrentPhaseIndex >= PhaseConfigs.Num())
+    SafeZoneData = InSafeZoneData;
+    if (!SafeZoneData || SafeZoneData->Phases.Num() == 0)
     {
-        // 所有阶段完成
-        bIsShrinking = false;
-        GetWorldTimerManager().ClearTimer(DamageTimerHandle);
+        UE_LOG(LogTemp, Error, TEXT("SafeZoneData is invalid!"));
         return;
     }
 
-    const FSafeZonePhaseConfig& PhaseConfig = PhaseConfigs[CurrentPhaseIndex];
+    // 初始化第一个安全区
+    if (SafeZoneData->MapCenter.IsZero())
+    {
+        // 随机地图中心
+        CurrentCenter = FVector(
+            FMath::RandRange(-SafeZoneData->MaxCenterOffset, SafeZoneData->MaxCenterOffset),
+            FMath::RandRange(-SafeZoneData->MaxCenterOffset, SafeZoneData->MaxCenterOffset),
+            0.0f
+        );
+    }
+    else
+    {
+        CurrentCenter = SafeZoneData->MapCenter;
+    }
 
-    // 设置目标参数
-    TargetRadius = PhaseConfig.Radius;
-    TargetCenter = CalculateRandomCenterInCircle(CurrentCenter, CurrentRadius, TargetRadius);
-    CurrentDamagePerSecond = PhaseConfig.DamagePerSecond;
-    PhaseStartTime = GetWorld()->GetTimeSeconds();
+    CurrentRadius = SafeZoneData->InitialRadius;
+    CurrentPhaseIndex = -1;
 
-    UE_LOG(LogTemp, Log, TEXT("Safe Zone Phase %d started. Target Radius: %.2f"), 
-           CurrentPhaseIndex, TargetRadius);
+    SetComponentTickEnabled(true);
+
+    // 启动第一阶段
+    StartNextPhase();
+
+    OnSafeZoneUpdated.Broadcast(CurrentCenter, CurrentRadius);
 }
 
-void ALyraBRSafeZoneManager::UpdateSafeZone(float DeltaTime)
+void UBRSafeZoneManagerComponent::StartNextPhase()
 {
-    if (CurrentPhaseIndex < 0 || CurrentPhaseIndex >= PhaseConfigs.Num()) return;
+    if (!GetOwner()->HasAuthority()) return;
 
-    const FSafeZonePhaseConfig& PhaseConfig = PhaseConfigs[CurrentPhaseIndex];
-    float ElapsedTime = GetWorld()->GetTimeSeconds() - PhaseStartTime;
-    float Progress = FMath::Clamp(ElapsedTime / PhaseConfig.Duration, 0.0f, 1.0f);
-
-    // 线性插值当前位置和半径
-    CurrentCenter = FMath::Lerp(CurrentCenter, TargetCenter, Progress);
-    CurrentRadius = FMath::Lerp(CurrentRadius, TargetRadius, Progress);
-
-    // 阶段完成
-    if (Progress >= 1.0f)
+    CurrentPhaseIndex++;
+    if (CurrentPhaseIndex >= SafeZoneData->Phases.Num())
     {
-        CurrentCenter = TargetCenter;
-        CurrentRadius = TargetRadius;
+        // 所有阶段完成
+        SetComponentTickEnabled(false);
+        UE_LOG(LogTemp, Log, TEXT("All SafeZone phases completed!"));
+        return;
+    }
+
+    const FBRSafeZonePhase& Phase = SafeZoneData->Phases[CurrentPhaseIndex];
+
+    // 设置目标圈
+    TargetCenter = GenerateRandomCenter(CurrentCenter, CurrentRadius * 0.5f);
+    TargetRadius = Phase.Radius;
+
+    // 先等待安全期
+    bIsShrinking = false;
+    PhaseTimeRemaining = Phase.SafeDuration;
+    PhaseTimer = 0.0f;
+
+    OnPhaseChanged.Broadcast(CurrentPhaseIndex);
+
+    UE_LOG(LogTemp, Log, TEXT("SafeZone Phase %d: Waiting %.1fs, then shrinking to %.0f over %.1fs"),
+        CurrentPhaseIndex, Phase.SafeDuration, Phase.Radius, Phase.ShrinkDuration);
+}
+
+void UBRSafeZoneManagerComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
+{
+    Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
+
+    if (!GetOwner()->HasAuthority()) return;
+
+    PhaseTimer += DeltaTime;
+    PhaseTimeRemaining = FMath::Max(0.0f, PhaseTimeRemaining - DeltaTime);
+
+    if (!bIsShrinking)
+    {
+        // 安全期倒计时
+        if (PhaseTimer >= SafeZoneData->Phases[CurrentPhaseIndex].SafeDuration)
+        {
+            bIsShrinking = true;
+            PhaseTimeRemaining = SafeZoneData->Phases[CurrentPhaseIndex].ShrinkDuration;
+            PhaseTimer = 0.0f;
+        }
+    }
+    else
+    {
+        // 缩圈中
+        UpdateShrinkingZone(DeltaTime);
+
+        if (PhaseTimer >= SafeZoneData->Phases[CurrentPhaseIndex].ShrinkDuration)
+        {
+            // 缩圈完成，进入下一阶段
+            CurrentCenter = TargetCenter;
+            CurrentRadius = TargetRadius;
+            OnSafeZoneUpdated.Broadcast(CurrentCenter, CurrentRadius);
+            StartNextPhase();
+        }
+    }
+}
+
+void UBRSafeZoneManagerComponent::UpdateShrinkingZone(float DeltaTime)
+{
+    const FBRSafeZonePhase& Phase = SafeZoneData->Phases[CurrentPhaseIndex];
+    float Alpha = FMath::Clamp(PhaseTimer / Phase.ShrinkDuration, 0.0f, 1.0f);
+
+    // 线性插值（可改为缓动曲线）
+    float PrevRadius = (CurrentPhaseIndex == 0) ? SafeZoneData->InitialRadius : SafeZoneData->Phases[CurrentPhaseIndex - 1].Radius;
+    CurrentRadius = FMath::Lerp(PrevRadius, TargetRadius, Alpha);
+    CurrentCenter = FMath::Lerp(CurrentCenter, TargetCenter, Alpha);
+
+    OnSafeZoneUpdated.Broadcast(CurrentCenter, CurrentRadius);
+}
+
+FVector UBRSafeZoneManagerComponent::GenerateRandomCenter(FVector PreviousCenter, float MaxRadius) const
+{
+    FVector2D Random2D = FMath::RandPointInCircle(MaxRadius);
+    return PreviousCenter + FVector(Random2D.X, Random2D.Y, 0.0f);
+}
+
+bool UBRSafeZoneManagerComponent::IsLocationInSafeZone(FVector Location) const
+{
+    float Distance = FVector::Dist2D(Location, CurrentCenter);
+    return Distance <= CurrentRadius;
+}
+
+float UBRSafeZoneManagerComponent::GetDistanceToSafeZoneCenter(FVector Location) const
+{
+    return FVector::Dist2D(Location, CurrentCenter);
+}
+
+void UBRSafeZoneManagerComponent::ForceNextPhase()
+{
+    if (GetOwner()->HasAuthority())
+    {
         StartNextPhase();
     }
 }
 
-void ALyraBRSafeZoneManager::ApplyDamageToPlayersOutside()
+void UBRSafeZoneManagerComponent::OnRep_CurrentCenter()
 {
-    if (!HasAuthority()) return;
+    OnSafeZoneUpdated.Broadcast(CurrentCenter, CurrentRadius);
+}
 
-    TArray<AActor*> AllCharacters;
-    UGameplayStatics::GetAllActorsOfClass(GetWorld(), ACharacter::StaticClass(), AllCharacters);
+void UBRSafeZoneManagerComponent::OnRep_CurrentRadius()
+{
+    OnSafeZoneUpdated.Broadcast(CurrentCenter, CurrentRadius);
+}
 
-    for (AActor* Actor : AllCharacters)
+void UBRSafeZoneManagerComponent::OnRep_TargetCenter()
+{
+    // UI 可以显示下一个圈的位置
+}
+
+void UBRSafeZoneManagerComponent::OnRep_TargetRadius()
+{
+    // UI 可以显示下一个圈的大小
+}
+```
+
+### 2.3 圈外伤害系统
+
+创建 **GameplayAbility** 实现圈外伤害：
+
+```cpp
+// GA_SafeZoneDamage.h
+#pragma once
+
+#include "CoreMinimal.h"
+#include "AbilitySystem/Abilities/LyraGameplayAbility.h"
+#include "GA_SafeZoneDamage.generated.h"
+
+UCLASS()
+class BATTLEROYALEPROJECT_API UGA_SafeZoneDamage : public ULyraGameplayAbility
+{
+    GENERATED_BODY()
+
+public:
+    UGA_SafeZoneDamage();
+
+    virtual void ActivateAbility(const FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo, const FGameplayAbilityActivationInfo ActivationInfo, const FGameplayEventData* TriggerEventData) override;
+    virtual void EndAbility(const FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo, const FGameplayAbilityActivationInfo ActivationInfo, bool bReplicateEndAbility, bool bWasCancelled) override;
+
+protected:
+    // 检查间隔（秒）
+    UPROPERTY(EditDefaultsOnly, Category = "SafeZone")
+    float CheckInterval = 1.0f;
+
+    UPROPERTY(EditDefaultsOnly, Category = "SafeZone")
+    TSubclassOf<UGameplayEffect> DamageEffect;
+
+private:
+    FTimerHandle DamageTimerHandle;
+
+    UFUNCTION()
+    void CheckAndApplyDamage();
+};
+```
+
+**实现伤害检测**：
+
+```cpp
+// GA_SafeZoneDamage.cpp
+#include "GA_SafeZoneDamage.h"
+#include "AbilitySystemComponent.h"
+#include "BRSafeZoneManagerComponent.h"
+#include "GameFramework/GameStateBase.h"
+
+UGA_SafeZoneDamage::UGA_SafeZoneDamage()
+{
+    InstancingPolicy = EGameplayAbilityInstancingPolicy::InstancedPerActor;
+    NetExecutionPolicy = EGameplayAbilityNetExecutionPolicy::ServerOnly;
+}
+
+void UGA_SafeZoneDamage::ActivateAbility(const FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo, const FGameplayAbilityActivationInfo ActivationInfo, const FGameplayEventData* TriggerEventData)
+{
+    if (!CommitAbility(Handle, ActorInfo, ActivationInfo))
     {
-        ACharacter* Character = Cast<ACharacter>(Actor);
-        if (!Character || Character->IsPendingKillPending()) continue;
+        EndAbility(Handle, ActorInfo, ActivationInfo, true, true);
+        return;
+    }
 
-        FVector CharacterLocation = Character->GetActorLocation();
-        
-        if (!IsLocationSafe(CharacterLocation))
+    // 启动定时检测
+    GetWorld()->GetTimerManager().SetTimer(
+        DamageTimerHandle,
+        this,
+        &UGA_SafeZoneDamage::CheckAndApplyDamage,
+        CheckInterval,
+        true
+    );
+}
+
+void UGA_SafeZoneDamage::CheckAndApplyDamage()
+{
+    AActor* OwnerActor = GetAvatarActorFromActorInfo();
+    if (!OwnerActor) return;
+
+    AGameStateBase* GameState = GetWorld()->GetGameState();
+    if (!GameState) return;
+
+    UBRSafeZoneManagerComponent* SafeZoneManager = GameState->FindComponentByClass<UBRSafeZoneManagerComponent>();
+    if (!SafeZoneManager) return;
+
+    FVector ActorLocation = OwnerActor->GetActorLocation();
+    if (!SafeZoneManager->IsLocationInSafeZone(ActorLocation))
+    {
+        // 在圈外，应用伤害
+        if (DamageEffect)
         {
-            // 对角色造成伤害
-            ULyraHealthComponent* HealthComp = ULyraHealthComponent::FindHealthComponent(Character);
-            if (HealthComp)
+            UAbilitySystemComponent* ASC = GetAbilitySystemComponentFromActorInfo();
+            if (ASC)
             {
-                // 使用 Gameplay Effect 造成伤害（这里简化处理）
-                float CurrentHealth = HealthComp->GetHealth();
-                float NewHealth = FMath::Max(0.0f, CurrentHealth - CurrentDamagePerSecond);
-                
-                // 这里应该通过 GAS 系统正确应用伤害
-                // 示例代码仅作说明
-                if (NewHealth <= 0.0f)
+                FGameplayEffectContextHandle EffectContext = ASC->MakeEffectContext();
+                EffectContext.AddSourceObject(this);
+
+                FGameplayEffectSpecHandle SpecHandle = ASC->MakeOutgoingSpec(DamageEffect, GetAbilityLevel(), EffectContext);
+                if (SpecHandle.IsValid())
                 {
-                    HealthComp->StartDeath();
+                    ASC->ApplyGameplayEffectSpecToSelf(*SpecHandle.Data.Get());
                 }
             }
         }
     }
 }
 
-FVector ALyraBRSafeZoneManager::CalculateRandomCenterInCircle(const FVector& OldCenter, 
-                                                              float OldRadius, float NewRadius)
+void UGA_SafeZoneDamage::EndAbility(const FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo, const FGameplayAbilityActivationInfo ActivationInfo, bool bReplicateEndAbility, bool bWasCancelled)
 {
-    // 确保新圆心在旧圆内，并且新圆完全包含在旧圆内
-    float MaxOffset = OldRadius - NewRadius;
-    if (MaxOffset <= 0.0f) return OldCenter;
+    if (DamageTimerHandle.IsValid())
+    {
+        GetWorld()->GetTimerManager().ClearTimer(DamageTimerHandle);
+    }
 
-    // 随机偏移
-    float RandomAngle = FMath::RandRange(0.0f, 360.0f);
-    float RandomDistance = FMath::RandRange(0.0f, MaxOffset * 0.7f); // 70% 以保证有趣的偏移
-
-    FVector2D Offset;
-    Offset.X = FMath::Cos(FMath::DegreesToRadians(RandomAngle)) * RandomDistance;
-    Offset.Y = FMath::Sin(FMath::DegreesToRadians(RandomAngle)) * RandomDistance;
-
-    return OldCenter + FVector(Offset.X, Offset.Y, 0);
-}
-
-bool ALyraBRSafeZoneManager::IsLocationSafe(const FVector& Location) const
-{
-    float Distance = FVector::Dist2D(Location, CurrentCenter);
-    return Distance <= CurrentRadius;
-}
-
-void ALyraBRSafeZoneManager::OnRep_CurrentCenter()
-{
-    // 更新可视化
-    SafeZoneVisualization->SetWorldLocation(CurrentCenter);
-}
-
-void ALyraBRSafeZoneManager::OnRep_CurrentRadius()
-{
-    // 更新可视化大小
-    float Scale = CurrentRadius / 100.0f; // 假设基础网格是 100cm
-    SafeZoneVisualization->SetWorldScale3D(FVector(Scale, Scale, 1.0f));
+    Super::EndAbility(Handle, ActorInfo, ActivationInfo, bReplicateEndAbility, bWasCancelled);
 }
 ```
 
-## 四、拾取和装备系统
+### 2.4 UI 显示：小地图与安全区边界
 
-### 4.1 战利品生成子系统
+创建 **Widget** 显示小地图上的安全区：
 
 ```cpp
-// LyraBRLootSpawnSubsystem.h
+// WBP_BRMinimap.h (Blueprint)
+// 蓝图实现要点：
+// 1. 绑定 SafeZoneManager 的 OnSafeZoneUpdated 事件
+// 2. 绘制当前圈（实线圆）
+// 3. 绘制目标圈（虚线圆）
+// 4. 显示玩家位置和队友位置
+// 5. 显示剩余时间和阶段信息
+```
+
+---
+
+## 3. 跳伞与落地系统
+
+### 3.1 运输机路径生成
+
+创建 **Actor** 管理运输机：
+
+```cpp
+// BRTransportPlane.h
 #pragma once
 
-#include "Subsystems/WorldSubsystem.h"
-#include "LyraBRLootSpawnSubsystem.generated.h"
+#include "CoreMinimal.h"
+#include "GameFramework/Actor.h"
+#include "BRTransportPlane.generated.h"
 
-USTRUCT(BlueprintType)
-struct FLootSpawnPoint
+UCLASS()
+class BATTLEROYALEPROJECT_API ABRTransportPlane : public AActor
 {
     GENERATED_BODY()
 
-    UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    FVector Location;
+public:
+    ABRTransportPlane();
 
-    UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    FRotator Rotation;
+    virtual void BeginPlay() override;
+    virtual void Tick(float DeltaTime) override;
 
-    UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    TArray<FName> Tags;
+    // 生成随机飞行路径
+    UFUNCTION(BlueprintCallable, Category = "Plane")
+    void GenerateFlightPath(FVector MapCenter, float MapRadius);
+
+    // 获取当前位置
+    UFUNCTION(BlueprintPure, Category = "Plane")
+    FVector GetCurrentPosition() const { return CurrentPosition; }
+
+    // 玩家跳伞
+    UFUNCTION(BlueprintCallable, Category = "Plane")
+    void EjectPlayer(APlayerController* PlayerController);
+
+protected:
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Plane")
+    float FlightSpeed = 5000.0f; // cm/s
+
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Plane")
+    float FlightHeight = 300000.0f; // 3000m
+
+    UPROPERTY(Replicated, BlueprintReadOnly, Category = "Plane")
+    FVector StartPosition;
+
+    UPROPERTY(Replicated, BlueprintReadOnly, Category = "Plane")
+    FVector EndPosition;
+
+    UPROPERTY(Replicated, BlueprintReadOnly, Category = "Plane")
+    FVector CurrentPosition;
+
+    UPROPERTY(Replicated, BlueprintReadOnly, Category = "Plane")
+    float FlightProgress = 0.0f;
+
+    virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+
+private:
+    float TotalFlightTime = 0.0f;
 };
+```
+
+**实现飞行逻辑**：
+
+```cpp
+// BRTransportPlane.cpp
+#include "BRTransportPlane.h"
+#include "Net/UnrealNetwork.h"
+#include "Kismet/GameplayStatics.h"
+
+ABRTransportPlane::ABRTransportPlane()
+{
+    PrimaryActorTick.bCanEverTick = true;
+    bReplicates = true;
+}
+
+void ABRTransportPlane::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+    Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+
+    DOREPLIFETIME(ABRTransportPlane, StartPosition);
+    DOREPLIFETIME(ABRTransportPlane, EndPosition);
+    DOREPLIFETIME(ABRTransportPlane, CurrentPosition);
+    DOREPLIFETIME(ABRTransportPlane, FlightProgress);
+}
+
+void ABRTransportPlane::BeginPlay()
+{
+    Super::BeginPlay();
+}
+
+void ABRTransportPlane::GenerateFlightPath(FVector MapCenter, float MapRadius)
+{
+    if (!HasAuthority()) return;
+
+    // 随机飞行角度
+    float Angle = FMath::RandRange(0.0f, 360.0f);
+    FVector Direction = FVector(FMath::Cos(FMath::DegreesToRadians(Angle)), FMath::Sin(FMath::DegreesToRadians(Angle)), 0.0f);
+
+    // 飞行路径穿过地图中心
+    float PathLength = MapRadius * 2.5f;
+    StartPosition = MapCenter - Direction * PathLength * 0.5f + FVector(0, 0, FlightHeight);
+    EndPosition = MapCenter + Direction * PathLength * 0.5f + FVector(0, 0, FlightHeight);
+
+    CurrentPosition = StartPosition;
+    FlightProgress = 0.0f;
+
+    TotalFlightTime = PathLength / FlightSpeed;
+
+    SetActorLocation(CurrentPosition);
+}
+
+void ABRTransportPlane::Tick(float DeltaTime)
+{
+    Super::Tick(DeltaTime);
+
+    if (!HasAuthority()) return;
+
+    FlightProgress += DeltaTime / TotalFlightTime;
+    if (FlightProgress >= 1.0f)
+    {
+        // 飞行结束
+        Destroy();
+        return;
+    }
+
+    CurrentPosition = FMath::Lerp(StartPosition, EndPosition, FlightProgress);
+    SetActorLocation(CurrentPosition);
+}
+
+void ABRTransportPlane::EjectPlayer(APlayerController* PlayerController)
+{
+    if (!HasAuthority()) return;
+
+    APawn* PlayerPawn = PlayerController->GetPawn();
+    if (!PlayerPawn) return;
+
+    // 生成跳伞角色
+    // TODO: 替换为跳伞状态的 Pawn
+    FVector EjectLocation = CurrentPosition + FVector(0, 0, -1000.0f);
+    PlayerPawn->SetActorLocation(EjectLocation);
+
+    // 激活跳伞技能
+    // TODO: 使用 GAS Ability 实现跳伞控制
+}
+```
+
+### 3.2 跳伞 Ability
+
+创建 **GameplayAbility** 实现跳伞控制：
+
+```cpp
+// GA_Parachute.h
+#pragma once
+
+#include "CoreMinimal.h"
+#include "AbilitySystem/Abilities/LyraGameplayAbility.h"
+#include "GA_Parachute.generated.h"
+
+UCLASS()
+class BATTLEROYALEPROJECT_API UGA_Parachute : public ULyraGameplayAbility
+{
+    GENERATED_BODY()
+
+public:
+    UGA_Parachute();
+
+    virtual void ActivateAbility(const FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo, const FGameplayAbilityActivationInfo ActivationInfo, const FGameplayEventData* TriggerEventData) override;
+    virtual void EndAbility(const FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo, const FGameplayAbilityActivationInfo ActivationInfo, bool bReplicateEndAbility, bool bWasCancelled) override;
+
+protected:
+    UPROPERTY(EditDefaultsOnly, Category = "Parachute")
+    float FallSpeed = 1000.0f; // cm/s
+
+    UPROPERTY(EditDefaultsOnly, Category = "Parachute")
+    float ForwardSpeed = 2000.0f;
+
+    UPROPERTY(EditDefaultsOnly, Category = "Parachute")
+    float MaxDeployHeight = 200000.0f; // 2000m
+
+    UPROPERTY(EditDefaultsOnly, Category = "Parachute")
+    float AutoDeployHeight = 10000.0f; // 100m
+
+    UPROPERTY(EditDefaultsOnly, Category = "Parachute")
+    TSubclassOf<class UGameplayEffect> ParachuteMovementEffect;
+
+private:
+    FGameplayEffectContextHandle EffectContext;
+    FActiveGameplayEffectHandle ActiveEffectHandle;
+};
+```
+
+**实现跳伞机制**：
+
+```cpp
+// GA_Parachute.cpp (关键部分)
+void UGA_Parachute::ActivateAbility(...)
+{
+    // 应用跳伞移动效果（修改重力和移动速度）
+    if (ParachuteMovementEffect)
+    {
+        UAbilitySystemComponent* ASC = GetAbilitySystemComponentFromActorInfo();
+        EffectContext = ASC->MakeEffectContext();
+        FGameplayEffectSpecHandle SpecHandle = ASC->MakeOutgoingSpec(ParachuteMovementEffect, GetAbilityLevel(), EffectContext);
+        ActiveEffectHandle = ASC->ApplyGameplayEffectSpecToSelf(*SpecHandle.Data.Get());
+    }
+
+    // 启动定时检测落地
+    GetWorld()->GetTimerManager().SetTimer(
+        LandingCheckTimer,
+        this,
+        &UGA_Parachute::CheckLanding,
+        0.1f,
+        true
+    );
+}
+
+void UGA_Parachute::CheckLanding()
+{
+    AActor* Avatar = GetAvatarActorFromActorInfo();
+    if (!Avatar) return;
+
+    // 检测高度
+    FVector Location = Avatar->GetActorLocation();
+    FHitResult HitResult;
+    FCollisionQueryParams Params;
+    Params.AddIgnoredActor(Avatar);
+
+    bool bHit = GetWorld()->LineTraceSingleByChannel(
+        HitResult,
+        Location,
+        Location - FVector(0, 0, 10000.0f),
+        ECC_Visibility,
+        Params
+    );
+
+    if (bHit && HitResult.Distance < AutoDeployHeight)
+    {
+        // 自动落地
+        EndAbility(...);
+    }
+}
+
+void UGA_Parachute::EndAbility(...)
+{
+    // 移除跳伞效果
+    if (ActiveEffectHandle.IsValid())
+    {
+        UAbilitySystemComponent* ASC = GetAbilitySystemComponentFromActorInfo();
+        ASC->RemoveActiveGameplayEffect(ActiveEffectHandle);
+    }
+
+    // 清除定时器
+    if (LandingCheckTimer.IsValid())
+    {
+        GetWorld()->GetTimerManager().ClearTimer(LandingCheckTimer);
+    }
+
+    Super::EndAbility(...);
+}
+```
+
+---
+
+## 4. 战利品与空投系统
+
+### 4.1 战利品生成器
+
+创建 **Actor** 管理战利品点：
+
+```cpp
+// BRLootSpawner.h
+#pragma once
+
+#include "CoreMinimal.h"
+#include "GameFramework/Actor.h"
+#include "BRLootSpawner.generated.h"
 
 USTRUCT(BlueprintType)
-struct FLootTableEntry
+struct FBRLootEntry
 {
     GENERATED_BODY()
 
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly)
-    TSubclassOf<class ULyraInventoryItemDefinition> ItemDefinition;
+    TSubclassOf<AActor> LootClass;
 
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly)
     float SpawnWeight = 1.0f;
 
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly)
-    int32 MinStack = 1;
+    int32 MinCount = 1;
 
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly)
-    int32 MaxStack = 1;
+    int32 MaxCount = 1;
 };
 
-/**
- * 战利品生成子系统
- * 管理地图上的战利品生成
- */
 UCLASS()
-class ULyraBRLootSpawnSubsystem : public UWorldSubsystem
+class BATTLEROYALEPROJECT_API ABRLootSpawner : public AActor
 {
     GENERATED_BODY()
 
 public:
-    virtual void Initialize(FSubsystemCollectionBase& Collection) override;
-    virtual void Deinitialize() override;
+    ABRLootSpawner();
 
-    // 生成所有战利品
-    UFUNCTION(BlueprintCallable, Category = "Loot")
-    void SpawnAllLoot();
-
-    // 在特定位置生成战利品
-    UFUNCTION(BlueprintCallable, Category = "Loot")
-    AActor* SpawnLootAtLocation(const FVector& Location, const FRotator& Rotation);
-
-protected:
-    // 战利品表
-    UPROPERTY(EditDefaultsOnly, Category = "Loot")
-    TArray<FLootTableEntry> CommonLootTable;
-
-    UPROPERTY(EditDefaultsOnly, Category = "Loot")
-    TArray<FLootTableEntry> RareLootTable;
-
-    UPROPERTY(EditDefaultsOnly, Category = "Loot")
-    TArray<FLootTableEntry> EpicLootTable;
-
-    // 生成点
-    UPROPERTY()
-    TArray<FLootSpawnPoint> SpawnPoints;
-
-    // 生成的战利品 Actor 类
-    UPROPERTY(EditDefaultsOnly, Category = "Loot")
-    TSubclassOf<class ALyraBRLootActor> LootActorClass;
-
-private:
-    void CollectSpawnPoints();
-    TSubclassOf<ULyraInventoryItemDefinition> SelectRandomLoot(const TArray<FLootTableEntry>& LootTable);
-    int32 GetRandomStackCount(const FLootTableEntry& Entry);
-};
-```
-
-### 4.2 战利品 Actor
-
-```cpp
-// LyraBRLootActor.h
-#pragma once
-
-#include "GameFramework/Actor.h"
-#include "LyraBRLootActor.generated.h"
-
-/**
- * 可拾取的战利品 Actor
- */
-UCLASS()
-class ALyraBRLootActor : public AActor
-{
-    GENERATED_BODY()
-
-public:
-    ALyraBRLootActor();
-
-    virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
-
-    // 设置战利品内容
-    UFUNCTION(BlueprintCallable, Category = "Loot")
-    void SetLootItem(TSubclassOf<class ULyraInventoryItemDefinition> ItemDef, int32 StackCount);
-
-    // 拾取战利品
-    UFUNCTION(Server, Reliable, BlueprintCallable, Category = "Loot")
-    void PickupLoot(AController* Picker);
-
-protected:
     virtual void BeginPlay() override;
 
-    // 网格体组件
-    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
-    TObjectPtr<UStaticMeshComponent> MeshComponent;
+    // 生成战利品
+    UFUNCTION(BlueprintCallable, Category = "Loot")
+    void SpawnLoot();
 
-    // 交互范围
-    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
-    TObjectPtr<class USphereComponent> InteractionSphere;
+protected:
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Loot")
+    TArray<FBRLootEntry> LootTable;
 
-    // 战利品内容
-    UPROPERTY(ReplicatedUsing = OnRep_ItemDefinition)
-    TSubclassOf<class ULyraInventoryItemDefinition> ItemDefinition;
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Loot")
+    float SpawnRadius = 500.0f;
 
-    UPROPERTY(Replicated)
-    int32 StackCount;
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Loot")
+    int32 MinSpawnCount = 3;
 
-    UFUNCTION()
-    void OnRep_ItemDefinition();
-
-    UFUNCTION()
-    void OnInteractionSphereBeginOverlap(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor,
-        UPrimitiveComponent* OtherComp, int32 OtherBodyIndex, bool bFromSweep, const FHitResult& SweepResult);
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Loot")
+    int32 MaxSpawnCount = 8;
 
 private:
-    void UpdateVisuals();
+    TSubclassOf<AActor> SelectRandomLoot() const;
 };
 ```
 
-**实现文件（LyraBRLootActor.cpp）**：
+**实现战利品生成**：
 
 ```cpp
-#include "LyraBRLootActor.h"
-#include "Components/StaticMeshComponent.h"
-#include "Components/SphereComponent.h"
-#include "Net/UnrealNetwork.h"
-#include "Inventory/LyraInventoryManagerComponent.h"
-#include "Inventory/LyraInventoryItemDefinition.h"
-#include "GameFramework/Character.h"
+// BRLootSpawner.cpp
+#include "BRLootSpawner.h"
+#include "Kismet/KismetMathLibrary.h"
 
-ALyraBRLootActor::ALyraBRLootActor()
+ABRLootSpawner::ABRLootSpawner()
 {
-    bReplicates = true;
-
-    // 创建网格体
-    MeshComponent = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("MeshComponent"));
-    RootComponent = MeshComponent;
-    MeshComponent->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
-    MeshComponent->SetCollisionResponseToAllChannels(ECR_Ignore);
-    MeshComponent->SetCollisionResponseToChannel(ECC_WorldStatic, ECR_Block);
-
-    // 创建交互范围
-    InteractionSphere = CreateDefaultSubobject<USphereComponent>(TEXT("InteractionSphere"));
-    InteractionSphere->SetupAttachment(RootComponent);
-    InteractionSphere->SetSphereRadius(200.0f);
-    InteractionSphere->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
-    InteractionSphere->SetCollisionResponseToAllChannels(ECR_Ignore);
-    InteractionSphere->SetCollisionResponseToChannel(ECC_Pawn, ECR_Overlap);
-
-    StackCount = 1;
+    PrimaryActorTick.bCanEverTick = false;
 }
 
-void ALyraBRLootActor::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
-{
-    Super::GetLifetimeReplicatedProps(OutLifetimeProps);
-
-    DOREPLIFETIME(ALyraBRLootActor, ItemDefinition);
-    DOREPLIFETIME(ALyraBRLootActor, StackCount);
-}
-
-void ALyraBRLootActor::BeginPlay()
+void ABRLootSpawner::BeginPlay()
 {
     Super::BeginPlay();
 
     if (HasAuthority())
     {
-        InteractionSphere->OnComponentBeginOverlap.AddDynamic(this, 
-            &ALyraBRLootActor::OnInteractionSphereBeginOverlap);
-    }
-
-    UpdateVisuals();
-}
-
-void ALyraBRLootActor::SetLootItem(TSubclassOf<ULyraInventoryItemDefinition> ItemDef, int32 Count)
-{
-    if (HasAuthority())
-    {
-        ItemDefinition = ItemDef;
-        StackCount = Count;
-        UpdateVisuals();
+        SpawnLoot();
     }
 }
 
-void ALyraBRLootActor::PickupLoot_Implementation(AController* Picker)
+void ABRLootSpawner::SpawnLoot()
 {
-    if (!HasAuthority() || !Picker || !ItemDefinition) return;
+    int32 SpawnCount = FMath::RandRange(MinSpawnCount, MaxSpawnCount);
 
-    APawn* PickerPawn = Picker->GetPawn();
-    if (!PickerPawn) return;
-
-    // 获取库存管理组件
-    ULyraInventoryManagerComponent* InventoryComp = 
-        PickerPawn->FindComponentByClass<ULyraInventoryManagerComponent>();
-
-    if (InventoryComp)
+    for (int32 i = 0; i < SpawnCount; ++i)
     {
-        // 尝试添加到库存
-        if (InventoryComp->CanAddItemDefinition(ItemDefinition, StackCount))
+        TSubclassOf<AActor> LootClass = SelectRandomLoot();
+        if (!LootClass) continue;
+
+        // 随机位置
+        FVector2D RandomOffset = FMath::RandPointInCircle(SpawnRadius);
+        FVector SpawnLocation = GetActorLocation() + FVector(RandomOffset.X, RandomOffset.Y, 100.0f);
+
+        // 地面检测
+        FHitResult HitResult;
+        FCollisionQueryParams Params;
+        Params.AddIgnoredActor(this);
+
+        bool bHit = GetWorld()->LineTraceSingleByChannel(
+            HitResult,
+            SpawnLocation,
+            SpawnLocation - FVector(0, 0, 10000.0f),
+            ECC_WorldStatic,
+            Params
+        );
+
+        if (bHit)
         {
-            InventoryComp->AddItemDefinition(ItemDefinition, StackCount);
+            SpawnLocation = HitResult.Location + FVector(0, 0, 50.0f);
+        }
 
-            // 拾取成功，销毁 Actor
-            Destroy();
+        // 生成战利品
+        FActorSpawnParameters SpawnParams;
+        SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn;
+        GetWorld()->SpawnActor<AActor>(LootClass, SpawnLocation, FRotator::ZeroRotator, SpawnParams);
+    }
+}
+
+TSubclassOf<AActor> ABRLootSpawner::SelectRandomLoot() const
+{
+    if (LootTable.Num() == 0) return nullptr;
+
+    // 加权随机选择
+    float TotalWeight = 0.0f;
+    for (const FBRLootEntry& Entry : LootTable)
+    {
+        TotalWeight += Entry.SpawnWeight;
+    }
+
+    float RandomValue = FMath::RandRange(0.0f, TotalWeight);
+    float CumulativeWeight = 0.0f;
+
+    for (const FBRLootEntry& Entry : LootTable)
+    {
+        CumulativeWeight += Entry.SpawnWeight;
+        if (RandomValue <= CumulativeWeight)
+        {
+            return Entry.LootClass;
         }
     }
-}
 
-void ALyraBRLootActor::OnRep_ItemDefinition()
-{
-    UpdateVisuals();
-}
-
-void ALyraBRLootActor::OnInteractionSphereBeginOverlap(UPrimitiveComponent* OverlappedComponent,
-    AActor* OtherActor, UPrimitiveComponent* OtherComp, int32 OtherBodyIndex,
-    bool bFromSweep, const FHitResult& SweepResult)
-{
-    ACharacter* Character = Cast<ACharacter>(OtherActor);
-    if (Character)
-    {
-        AController* Controller = Character->GetController();
-        if (Controller)
-        {
-            // 自动拾取或显示拾取提示
-            PickupLoot(Controller);
-        }
-    }
-}
-
-void ALyraBRLootActor::UpdateVisuals()
-{
-    if (!ItemDefinition) return;
-
-    // 根据物品定义更新网格体和材质
-    // 这里需要从 ItemDefinition 中获取显示信息
-    const ULyraInventoryItemDefinition* ItemDef = ItemDefinition.GetDefaultObject();
-    if (ItemDef)
-    {
-        // 设置网格体（需要在 ItemDefinition 中添加显示信息）
-        // MeshComponent->SetStaticMesh(ItemDef->DisplayMesh);
-    }
+    return LootTable[0].LootClass;
 }
 ```
 
-## 五、库存和背包系统
+### 4.2 空投系统
 
-### 5.1 扩展库存组件
+创建 **Actor** 管理空投：
 
 ```cpp
-// LyraBRInventoryComponent.h
+// BRAirdrop.h
 #pragma once
 
-#include "Inventory/LyraInventoryManagerComponent.h"
-#include "LyraBRInventoryComponent.generated.h"
+#include "CoreMinimal.h"
+#include "GameFramework/Actor.h"
+#include "BRAirdrop.generated.h"
 
-/**
- * 大逃杀库存组件
- * 扩展 Lyra 的基础库存系统，添加背包容量限制
- */
 UCLASS()
-class ULyraBRInventoryComponent : public ULyraInventoryManagerComponent
+class BATTLEROYALEPROJECT_API ABRAirdrop : public AActor
 {
     GENERATED_BODY()
 
 public:
-    ULyraBRInventoryComponent();
+    ABRAirdrop();
 
-    virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
-
-    // 检查是否有足够空间
-    UFUNCTION(BlueprintCallable, Category = "Inventory")
-    bool HasSpaceForItem(TSubclassOf<ULyraInventoryItemDefinition> ItemDef, int32 StackCount = 1);
-
-    // 获取当前负重
-    UFUNCTION(BlueprintPure, Category = "Inventory")
-    float GetCurrentWeight() const { return CurrentWeight; }
-
-    // 获取最大负重
-    UFUNCTION(BlueprintPure, Category = "Inventory")
-    float GetMaxWeight() const { return MaxWeight; }
-
-    // 丢弃物品
-    UFUNCTION(Server, Reliable, BlueprintCallable, Category = "Inventory")
-    void DropItem(ULyraInventoryItemInstance* ItemInstance, int32 DropCount);
-
-protected:
-    // 背包容量限制
-    UPROPERTY(EditDefaultsOnly, Replicated, Category = "Inventory")
-    int32 MaxSlots = 30;
-
-    UPROPERTY(EditDefaultsOnly, Replicated, Category = "Inventory")
-    float MaxWeight = 100.0f;
-
-    UPROPERTY(Replicated)
-    float CurrentWeight;
-
-private:
-    void RecalculateWeight();
-    float GetItemWeight(const ULyraInventoryItemDefinition* ItemDef) const;
-};
-```
-
-### 5.2 背包 UI
-
-创建蓝图 Widget：**WBP_BattleRoyaleInventory**
-
-```cpp
-// LyraBRInventoryWidget.h
-#pragma once
-
-#include "CommonUserWidget.h"
-#include "LyraBRInventoryWidget.generated.h"
-
-/**
- * 大逃杀库存 UI
- */
-UCLASS(Abstract)
-class ULyraBRInventoryWidget : public UCommonUserWidget
-{
-    GENERATED_BODY()
-
-public:
-    virtual void NativeConstruct() override;
-    virtual void NativeTick(const FGeometry& MyGeometry, float InDeltaTime) override;
-
-    // 刷新库存显示
-    UFUNCTION(BlueprintCallable, Category = "Inventory")
-    void RefreshInventory();
-
-    // 使用物品
-    UFUNCTION(BlueprintCallable, Category = "Inventory")
-    void UseItem(ULyraInventoryItemInstance* ItemInstance);
-
-    // 丢弃物品
-    UFUNCTION(BlueprintCallable, Category = "Inventory")
-    void DropItem(ULyraInventoryItemInstance* ItemInstance, int32 Count);
-
-protected:
-    // 库存网格容器
-    UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
-    TObjectPtr<class UGridPanel> InventoryGrid;
-
-    // 装备栏容器
-    UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
-    TObjectPtr<class UHorizontalBox> EquipmentSlots;
-
-    // 负重文本
-    UPROPERTY(BlueprintReadOnly, meta = (BindWidget))
-    TObjectPtr<class UTextBlock> WeightText;
-
-    // 物品槽 Widget 类
-    UPROPERTY(EditDefaultsOnly, Category = "Inventory")
-    TSubclassOf<class ULyraBRItemSlotWidget> ItemSlotWidgetClass;
-
-    UPROPERTY()
-    TObjectPtr<ULyraBRInventoryComponent> InventoryComponent;
-
-private:
-    void CreateItemSlots();
-    void UpdateWeightDisplay();
-};
-```
-
-## 六、载具系统集成
-
-### 6.1 载具基类
-
-```cpp
-// LyraBRVehicle.h
-#pragma once
-
-#include "GameFramework/WheeledVehiclePawn.h"
-#include "LyraBRVehicle.generated.h"
-
-/**
- * 大逃杀载具基类
- */
-UCLASS(Abstract)
-class ALyraBRVehicle : public AWheeledVehiclePawn
-{
-    GENERATED_BODY()
-
-public:
-    ALyraBRVehicle();
-
-    virtual void Tick(float DeltaTime) override;
-    virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
-
-    // 进入载具
-    UFUNCTION(Server, Reliable, BlueprintCallable, Category = "Vehicle")
-    void EnterVehicle(ACharacter* Character, int32 SeatIndex = 0);
-
-    // 离开载具
-    UFUNCTION(Server, Reliable, BlueprintCallable, Category = "Vehicle")
-    void ExitVehicle(ACharacter* Character);
-
-    // 获取可用座位
-    UFUNCTION(BlueprintPure, Category = "Vehicle")
-    TArray<int32> GetAvailableSeats() const;
-
-protected:
     virtual void BeginPlay() override;
+    virtual void Tick(float DeltaTime) override;
 
-    // 座位配置
-    UPROPERTY(EditDefaultsOnly, Category = "Vehicle")
-    int32 MaxSeats = 4;
+    // 初始化空投
+    UFUNCTION(BlueprintCallable, Category = "Airdrop")
+    void InitializeAirdrop(FVector TargetLocation);
 
-    // 当前乘客
-    UPROPERTY(Replicated)
-    TArray<TObjectPtr<ACharacter>> Passengers;
+protected:
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Airdrop")
+    UStaticMeshComponent* SupplyBoxMesh;
 
-    // 载具血量
-    UPROPERTY(EditDefaultsOnly, Replicated, Category = "Vehicle")
-    float MaxHealth = 1000.0f;
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Airdrop")
+    float DescentSpeed = 500.0f;
 
-    UPROPERTY(ReplicatedUsing = OnRep_Health)
-    float CurrentHealth;
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Airdrop")
+    float InitialHeight = 300000.0f;
+
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Airdrop")
+    TArray<TSubclassOf<AActor>> HighTierLoot;
+
+    UPROPERTY(Replicated, BlueprintReadOnly, Category = "Airdrop")
+    bool bHasLanded = false;
+
+    virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+
+private:
+    FVector TargetGroundLocation;
 
     UFUNCTION()
-    void OnRep_Health();
+    void OnLanded();
 
-    // 载具交互范围
-    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
-    TObjectPtr<class USphereComponent> InteractionSphere;
-
-private:
-    void AttachPassengerToSeat(ACharacter* Character, int32 SeatIndex);
-    void DetachPassengerFromSeat(ACharacter* Character);
-    FTransform GetSeatTransform(int32 SeatIndex) const;
+    void SpawnLoot();
 };
 ```
 
-**载具生成管理器**：
+**实现空投降落**：
 
 ```cpp
-// LyraBRVehicleSpawnManager.h
+// BRAirdrop.cpp
+#include "BRAirdrop.h"
+#include "Net/UnrealNetwork.h"
+#include "Components/StaticMeshComponent.h"
+
+ABRAirdrop::ABRAirdrop()
+{
+    PrimaryActorTick.bCanEverTick = true;
+    bReplicates = true;
+
+    SupplyBoxMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("SupplyBox"));
+    RootComponent = SupplyBoxMesh;
+}
+
+void ABRAirdrop::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+    Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+    DOREPLIFETIME(ABRAirdrop, bHasLanded);
+}
+
+void ABRAirdrop::BeginPlay()
+{
+    Super::BeginPlay();
+}
+
+void ABRAirdrop::InitializeAirdrop(FVector TargetLocation)
+{
+    TargetGroundLocation = TargetLocation;
+    FVector StartLocation = TargetLocation + FVector(0, 0, InitialHeight);
+    SetActorLocation(StartLocation);
+}
+
+void ABRAirdrop::Tick(float DeltaTime)
+{
+    Super::Tick(DeltaTime);
+
+    if (!HasAuthority() || bHasLanded) return;
+
+    FVector CurrentLocation = GetActorLocation();
+    FVector NewLocation = CurrentLocation - FVector(0, 0, DescentSpeed * DeltaTime);
+
+    if (NewLocation.Z <= TargetGroundLocation.Z)
+    {
+        NewLocation.Z = TargetGroundLocation.Z;
+        bHasLanded = true;
+        OnLanded();
+    }
+
+    SetActorLocation(NewLocation);
+}
+
+void ABRAirdrop::OnLanded()
+{
+    SpawnLoot();
+
+    // 播放特效和音效
+    // TODO: 添加粒子效果和音效
+}
+
+void ABRAirdrop::SpawnLoot()
+{
+    for (TSubclassOf<AActor> LootClass : HighTierLoot)
+    {
+        if (!LootClass) continue;
+
+        FVector SpawnLocation = GetActorLocation() + FVector(FMath::RandRange(-200.0f, 200.0f), FMath::RandRange(-200.0f, 200.0f), 50.0f);
+        GetWorld()->SpawnActor<AActor>(LootClass, SpawnLocation, FRotator::ZeroRotator);
+    }
+}
+```
+
+---
+
+## 5. 组队与复活机制
+
+### 5.1 队伍管理器扩展
+
+扩展 Lyra 的 `LyraTeamSubsystem` 支持组队：
+
+```cpp
+// BRSquadComponent.h
 #pragma once
 
-#include "GameFramework/Actor.h"
-#include "LyraBRVehicleSpawnManager.generated.h"
+#include "CoreMinimal.h"
+#include "Components/GameStateComponent.h"
+#include "BRSquadComponent.generated.h"
 
 USTRUCT(BlueprintType)
-struct FVehicleSpawnConfig
+struct FBRSquad
 {
     GENERATED_BODY()
 
-    UPROPERTY(EditDefaultsOnly)
-    TSubclassOf<class ALyraBRVehicle> VehicleClass;
+    UPROPERTY(BlueprintReadOnly)
+    int32 SquadID;
 
-    UPROPERTY(EditDefaultsOnly)
-    int32 SpawnCount = 10;
+    UPROPERTY(BlueprintReadOnly)
+    TArray<APlayerState*> Members;
 
-    UPROPERTY(EditDefaultsOnly)
-    float SpawnWeight = 1.0f;
+    UPROPERTY(BlueprintReadOnly)
+    int32 AliveCount = 0;
+
+    UPROPERTY(BlueprintReadOnly)
+    bool bIsEliminated = false;
 };
 
-/**
- * 载具生成管理器
- */
 UCLASS()
-class ALyraBRVehicleSpawnManager : public AActor
+class BATTLEROYALEPROJECT_API UBRSquadComponent : public UGameStateComponent
 {
     GENERATED_BODY()
 
 public:
-    ALyraBRVehicleSpawnManager();
+    UBRSquadComponent();
 
-    // 生成所有载具
-    UFUNCTION(BlueprintCallable, Category = "Vehicle")
-    void SpawnAllVehicles();
+    // 创建队伍
+    UFUNCTION(BlueprintCallable, Category = "Squad")
+    int32 CreateSquad(const TArray<APlayerState*>& Players);
+
+    // 获取玩家所在队伍
+    UFUNCTION(BlueprintPure, Category = "Squad")
+    FBRSquad GetPlayerSquad(APlayerState* PlayerState) const;
+
+    // 检查队伍是否全灭
+    UFUNCTION(BlueprintPure, Category = "Squad")
+    bool IsSquadEliminated(int32 SquadID) const;
+
+    // 通知队友死亡
+    UFUNCTION(BlueprintCallable, Category = "Squad")
+    void OnPlayerDied(APlayerState* PlayerState);
 
 protected:
-    UPROPERTY(EditDefaultsOnly, Category = "Vehicle")
-    TArray<FVehicleSpawnConfig> VehicleConfigs;
+    UPROPERTY(Replicated)
+    TArray<FBRSquad> Squads;
+
+    virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 private:
-    void CollectSpawnLocations();
-    TArray<FVector> SpawnLocations;
+    int32 NextSquadID = 1;
 };
 ```
 
-## 七、观战系统
+### 5.2 复活信标系统
 
-### 7.1 观战 Player Controller
+创建 **可交互物体** 实现复活机制：
 
 ```cpp
-// LyraBRSpectatorController.h
+// BRRespawnBeacon.h
 #pragma once
 
-#include "GameFramework/PlayerController.h"
-#include "LyraBRSpectatorController.generated.h"
+#include "CoreMinimal.h"
+#include "GameFramework/Actor.h"
+#include "Interaction/IInteractableTarget.h"
+#include "BRRespawnBeacon.generated.h"
 
-/**
- * 观战控制器
- * 玩家死亡后用于观看其他玩家
- */
 UCLASS()
-class ALyraBRSpectatorController : public APlayerController
+class BATTLEROYALEPROJECT_API ABRRespawnBeacon : public AActor, public IInteractableTarget
 {
     GENERATED_BODY()
 
 public:
-    ALyraBRSpectatorController();
+    ABRRespawnBeacon();
 
+    // IInteractableTarget 接口
+    virtual FText GetInteractionText_Implementation() const override;
+    virtual bool CanInteract_Implementation(APawn* InteractingPawn) const override;
+    virtual void OnInteract_Implementation(APawn* InteractingPawn) override;
+
+    // 设置待复活玩家
+    UFUNCTION(BlueprintCallable, Category = "Respawn")
+    void SetPendingPlayer(APlayerState* PlayerState);
+
+protected:
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Respawn")
+    float RespawnDelay = 5.0f;
+
+    UPROPERTY(Replicated, BlueprintReadOnly, Category = "Respawn")
+    APlayerState* PendingPlayerState;
+
+    UPROPERTY(Replicated, BlueprintReadOnly, Category = "Respawn")
+    bool bIsActivated = false;
+
+    virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+
+private:
+    FTimerHandle RespawnTimerHandle;
+
+    UFUNCTION()
+    void ExecuteRespawn();
+};
+```
+
+**实现复活交互**：
+
+```cpp
+// BRRespawnBeacon.cpp
+#include "BRRespawnBeacon.h"
+#include "Net/UnrealNetwork.h"
+
+ABRRespawnBeacon::ABRRespawnBeacon()
+{
+    bReplicates = true;
+}
+
+void ABRRespawnBeacon::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+    Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+    DOREPLIFETIME(ABRRespawnBeacon, PendingPlayerState);
+    DOREPLIFETIME(ABRRespawnBeacon, bIsActivated);
+}
+
+FText ABRRespawnBeacon::GetInteractionText_Implementation() const
+{
+    if (bIsActivated)
+    {
+        return FText::FromString(TEXT("Respawning..."));
+    }
+    return FText::FromString(TEXT("Press [E] to Respawn Teammate"));
+}
+
+bool ABRRespawnBeacon::CanInteract_Implementation(APawn* InteractingPawn) const
+{
+    return !bIsActivated && PendingPlayerState != nullptr;
+}
+
+void ABRRespawnBeacon::OnInteract_Implementation(APawn* InteractingPawn)
+{
+    if (!HasAuthority() || bIsActivated) return;
+
+    bIsActivated = true;
+
+    GetWorld()->GetTimerManager().SetTimer(
+        RespawnTimerHandle,
+        this,
+        &ABRRespawnBeacon::ExecuteRespawn,
+        RespawnDelay,
+        false
+    );
+}
+
+void ABRRespawnBeacon::ExecuteRespawn()
+{
+    if (!HasAuthority() || !PendingPlayerState) return;
+
+    // 重生玩家
+    APlayerController* PC = Cast<APlayerController>(PendingPlayerState->GetOwner());
+    if (PC)
+    {
+        // 调用 GameMode 的重生逻辑
+        // TODO: 集成 Lyra 的 Respawn 系统
+        GetWorld()->GetAuthGameMode()->RestartPlayer(PC);
+    }
+
+    // 销毁信标
+    Destroy();
+}
+
+void ABRRespawnBeacon::SetPendingPlayer(APlayerState* PlayerState)
+{
+    PendingPlayerState = PlayerState;
+}
+```
+
+---
+
+## 6. 倒地与救援系统
+
+### 6.1 倒地状态 Ability
+
+创建 **GameplayAbility** 实现倒地机制：
+
+```cpp
+// GA_DBNO.h (Down But Not Out)
+#pragma once
+
+#include "CoreMinimal.h"
+#include "AbilitySystem/Abilities/LyraGameplayAbility.h"
+#include "GA_DBNO.generated.h"
+
+UCLASS()
+class BATTLEROYALEPROJECT_API UGA_DBNO : public ULyraGameplayAbility
+{
+    GENERATED_BODY()
+
+public:
+    UGA_DBNO();
+
+    virtual void ActivateAbility(const FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo, const FGameplayAbilityActivationInfo ActivationInfo, const FGameplayEventData* TriggerEventData) override;
+    virtual void EndAbility(const FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo, const FGameplayAbilityActivationInfo ActivationInfo, bool bReplicateEndAbility, bool bWasCancelled) override;
+
+protected:
+    // 倒地持续时间（秒）
+    UPROPERTY(EditDefaultsOnly, Category = "DBNO")
+    float BleedoutDuration = 60.0f;
+
+    // 倒地移动速度（原速度的百分比）
+    UPROPERTY(EditDefaultsOnly, Category = "DBNO")
+    float MovementSpeedMultiplier = 0.2f;
+
+    UPROPERTY(EditDefaultsOnly, Category = "DBNO")
+    TSubclassOf<UGameplayEffect> DBNOMovementEffect;
+
+    UPROPERTY(EditDefaultsOnly, Category = "DBNO")
+    TSubclassOf<UGameplayEffect> BleedoutDamageEffect;
+
+private:
+    FTimerHandle BleedoutTimerHandle;
+    FActiveGameplayEffectHandle MovementEffectHandle;
+
+    UFUNCTION()
+    void OnBleedoutComplete();
+};
+```
+
+**实现倒地逻辑**：
+
+```cpp
+// GA_DBNO.cpp
+#include "GA_DBNO.h"
+#include "AbilitySystemComponent.h"
+#include "Character/LyraHealthComponent.h"
+
+UGA_DBNO::UGA_DBNO()
+{
+    InstancingPolicy = EGameplayAbilityInstancingPolicy::InstancedPerActor;
+    NetExecutionPolicy = EGameplayAbilityNetExecutionPolicy::ServerOnly;
+}
+
+void UGA_DBNO::ActivateAbility(const FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo, const FGameplayAbilityActivationInfo ActivationInfo, const FGameplayEventData* TriggerEventData)
+{
+    if (!CommitAbility(Handle, ActorInfo, ActivationInfo))
+    {
+        EndAbility(Handle, ActorInfo, ActivationInfo, true, true);
+        return;
+    }
+
+    UAbilitySystemComponent* ASC = GetAbilitySystemComponentFromActorInfo();
+
+    // 应用移动限制效果
+    if (DBNOMovementEffect)
+    {
+        FGameplayEffectContextHandle EffectContext = ASC->MakeEffectContext();
+        FGameplayEffectSpecHandle SpecHandle = ASC->MakeOutgoingSpec(DBNOMovementEffect, GetAbilityLevel(), EffectContext);
+        MovementEffectHandle = ASC->ApplyGameplayEffectSpecToSelf(*SpecHandle.Data.Get());
+    }
+
+    // 启动流血倒计时
+    GetWorld()->GetTimerManager().SetTimer(
+        BleedoutTimerHandle,
+        this,
+        &UGA_DBNO::OnBleedoutComplete,
+        BleedoutDuration,
+        false
+    );
+
+    // 切换角色姿态为趴下
+    AActor* Avatar = GetAvatarActorFromActorInfo();
+    if (ACharacter* Character = Cast<ACharacter>(Avatar))
+    {
+        Character->Crouch();
+    }
+}
+
+void UGA_DBNO::OnBleedoutComplete()
+{
+    // 流血时间结束，彻底死亡
+    AActor* Avatar = GetAvatarActorFromActorInfo();
+    if (ULyraHealthComponent* HealthComp = Avatar->FindComponentByClass<ULyraHealthComponent>())
+    {
+        // 设置生命值为 0
+        // TODO: 触发死亡逻辑
+    }
+
+    EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, false);
+}
+
+void UGA_DBNO::EndAbility(const FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo, const FGameplayAbilityActivationInfo ActivationInfo, bool bReplicateEndAbility, bool bWasCancelled)
+{
+    // 清除效果
+    if (MovementEffectHandle.IsValid())
+    {
+        UAbilitySystemComponent* ASC = GetAbilitySystemComponentFromActorInfo();
+        ASC->RemoveActiveGameplayEffect(MovementEffectHandle);
+    }
+
+    if (BleedoutTimerHandle.IsValid())
+    {
+        GetWorld()->GetTimerManager().ClearTimer(BleedoutTimerHandle);
+    }
+
+    Super::EndAbility(Handle, ActorInfo, ActivationInfo, bReplicateEndAbility, bWasCancelled);
+}
+```
+
+### 6.2 救援 Ability
+
+创建 **交互技能** 实现救援：
+
+```cpp
+// GA_Revive.h
+#pragma once
+
+#include "CoreMinimal.h"
+#include "AbilitySystem/Abilities/LyraGameplayAbility.h"
+#include "GA_Revive.generated.h"
+
+UCLASS()
+class BATTLEROYALEPROJECT_API UGA_Revive : public ULyraGameplayAbility
+{
+    GENERATED_BODY()
+
+public:
+    UGA_Revive();
+
+    virtual bool CanActivateAbility(const FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo, const FGameplayTagContainer* SourceTags, const FGameplayTagContainer* TargetTags, FGameplayTagContainer* OptionalRelevantTags) const override;
+    virtual void ActivateAbility(const FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo, const FGameplayAbilityActivationInfo ActivationInfo, const FGameplayEventData* TriggerEventData) override;
+    virtual void EndAbility(const FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo, const FGameplayAbilityActivationInfo ActivationInfo, bool bReplicateEndAbility, bool bWasCancelled) override;
+
+protected:
+    // 救援时间（秒）
+    UPROPERTY(EditDefaultsOnly, Category = "Revive")
+    float ReviveDuration = 5.0f;
+
+    // 救援后恢复的生命值百分比
+    UPROPERTY(EditDefaultsOnly, Category = "Revive")
+    float ReviveHealthPercent = 0.3f;
+
+    UPROPERTY(EditDefaultsOnly, Category = "Revive")
+    TSubclassOf<UGameplayEffect> ReviveHealEffect;
+
+private:
+    FTimerHandle ReviveTimerHandle;
+    TWeakObjectPtr<AActor> TargetActor;
+
+    UFUNCTION()
+    void OnReviveComplete();
+};
+```
+
+**实现救援交互**：
+
+```cpp
+// GA_Revive.cpp (关键部分)
+bool UGA_Revive::CanActivateAbility(...) const
+{
+    // 检测附近是否有倒地队友
+    AActor* Avatar = GetAvatarActorFromActorInfo();
+    if (!Avatar) return false;
+
+    // 射线检测
+    FVector Start = Avatar->GetActorLocation();
+    FVector End = Start + Avatar->GetActorForwardVector() * 200.0f;
+
+    FHitResult HitResult;
+    FCollisionQueryParams Params;
+    Params.AddIgnoredActor(Avatar);
+
+    if (GetWorld()->LineTraceSingleByChannel(HitResult, Start, End, ECC_Pawn, Params))
+    {
+        if (AActor* HitActor = HitResult.GetActor())
+        {
+            // 检查是否有 DBNO Tag
+            UAbilitySystemComponent* TargetASC = UAbilitySystemBlueprintLibrary::GetAbilitySystemComponent(HitActor);
+            if (TargetASC && TargetASC->HasMatchingGameplayTag(FGameplayTag::RequestGameplayTag(TEXT("Status.DBNO"))))
+            {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+void UGA_Revive::ActivateAbility(...)
+{
+    if (!CommitAbility(...)) { EndAbility(...); return; }
+
+    // 找到目标
+    AActor* Avatar = GetAvatarActorFromActorInfo();
+    FVector Start = Avatar->GetActorLocation();
+    FVector End = Start + Avatar->GetActorForwardVector() * 200.0f;
+
+    FHitResult HitResult;
+    if (GetWorld()->LineTraceSingleByChannel(HitResult, Start, End, ECC_Pawn, FCollisionQueryParams()))
+    {
+        TargetActor = HitResult.GetActor();
+    }
+
+    // 启动救援倒计时
+    GetWorld()->GetTimerManager().SetTimer(
+        ReviveTimerHandle,
+        this,
+        &UGA_Revive::OnReviveComplete,
+        ReviveDuration,
+        false
+    );
+
+    // 播放救援动画
+    // TODO: 触发救援动画 Montage
+}
+
+void UGA_Revive::OnReviveComplete()
+{
+    if (!TargetActor.IsValid()) return;
+
+    UAbilitySystemComponent* TargetASC = UAbilitySystemBlueprintLibrary::GetAbilitySystemComponent(TargetActor.Get());
+    if (!TargetASC) return;
+
+    // 移除 DBNO Tag
+    TargetASC->RemoveLooseGameplayTag(FGameplayTag::RequestGameplayTag(TEXT("Status.DBNO")));
+
+    // 恢复生命值
+    if (ReviveHealEffect)
+    {
+        FGameplayEffectContextHandle EffectContext = TargetASC->MakeEffectContext();
+        FGameplayEffectSpecHandle SpecHandle = TargetASC->MakeOutgoingSpec(ReviveHealEffect, GetAbilityLevel(), EffectContext);
+        TargetASC->ApplyGameplayEffectSpecToSelf(*SpecHandle.Data.Get());
+    }
+
+    EndAbility(...);
+}
+```
+
+---
+
+## 7. 观战系统
+
+### 7.1 观战 PlayerController
+
+创建 **专用 PlayerController** 实现观战功能：
+
+```cpp
+// BRSpectatorController.h
+#pragma once
+
+#include "CoreMinimal.h"
+#include "GameFramework/PlayerController.h"
+#include "BRSpectatorController.generated.h"
+
+UCLASS()
+class BATTLEROYALEPROJECT_API ABRSpectatorController : public APlayerController
+{
+    GENERATED_BODY()
+
+public:
+    ABRSpectatorController();
+
+    virtual void BeginPlay() override;
     virtual void SetupInputComponent() override;
 
-    // 切换到下一个玩家
+    // 切换观战目标
     UFUNCTION(BlueprintCallable, Category = "Spectator")
     void SpectateNextPlayer();
 
-    // 切换到上一个玩家
     UFUNCTION(BlueprintCallable, Category = "Spectator")
     void SpectatePreviousPlayer();
 
-    // 观看特定玩家
-    UFUNCTION(Server, Reliable, BlueprintCallable, Category = "Spectator")
+    UFUNCTION(BlueprintCallable, Category = "Spectator")
     void SpectatePlayer(APlayerState* TargetPlayerState);
 
-    // 获取当前观看的玩家
+    // 获取当前观战目标
     UFUNCTION(BlueprintPure, Category = "Spectator")
-    APlayerState* GetSpectatedPlayerState() const { return CurrentSpectatedPlayerState; }
+    APlayerState* GetCurrentSpectatedPlayer() const { return CurrentSpectatedPlayer; }
 
 protected:
-    // 当前观看的玩家
-    UPROPERTY(Replicated)
-    TObjectPtr<APlayerState> CurrentSpectatedPlayerState;
+    UPROPERTY(BlueprintReadOnly, Category = "Spectator")
+    TArray<APlayerState*> AlivePlayersList;
 
-    // 可观看的玩家列表
-    UPROPERTY()
-    TArray<TObjectPtr<APlayerState>> SpectateablePlayerStates;
+    UPROPERTY(Replicated, BlueprintReadOnly, Category = "Spectator")
+    APlayerState* CurrentSpectatedPlayer;
+
+    UPROPERTY(EditDefaultsOnly, Category = "Spectator")
+    TSubclassOf<class UCameraComponent> SpectateCameraClass;
+
+    virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 private:
-    void UpdateSpectateableList();
-    void SetSpectatedPlayer(APlayerState* PlayerState);
-    int32 GetCurrentSpectateIndex() const;
+    int32 CurrentSpectateIndex = 0;
+
+    void UpdateAlivePlayersList();
+    void SetViewTargetToPlayer(APlayerState* PlayerState);
+
+    void OnNextPlayerInput();
+    void OnPreviousPlayerInput();
 };
 ```
 
-**实现文件（LyraBRSpectatorController.cpp）**：
+**实现观战切换**：
 
 ```cpp
-#include "LyraBRSpectatorController.h"
+// BRSpectatorController.cpp
+#include "BRSpectatorController.h"
+#include "Net/UnrealNetwork.h"
 #include "GameFramework/PlayerState.h"
 #include "GameFramework/GameStateBase.h"
-#include "GameFramework/SpectatorPawn.h"
-#include "Net/UnrealNetwork.h"
 
-ALyraBRSpectatorController::ALyraBRSpectatorController()
+ABRSpectatorController::ABRSpectatorController()
 {
-    bShowMouseCursor = false;
 }
 
-void ALyraBRSpectatorController::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+void ABRSpectatorController::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
     Super::GetLifetimeReplicatedProps(OutLifetimeProps);
-
-    DOREPLIFETIME(ALyraBRSpectatorController, CurrentSpectatedPlayerState);
+    DOREPLIFETIME(ABRSpectatorController, CurrentSpectatedPlayer);
 }
 
-void ALyraBRSpectatorController::SetupInputComponent()
+void ABRSpectatorController::BeginPlay()
+{
+    Super::BeginPlay();
+
+    UpdateAlivePlayersList();
+
+    if (AlivePlayersList.Num() > 0)
+    {
+        SpectatePlayer(AlivePlayersList[0]);
+    }
+}
+
+void ABRSpectatorController::SetupInputComponent()
 {
     Super::SetupInputComponent();
 
-    // 绑定观战输入
-    InputComponent->BindAction("SpectateNext", IE_Pressed, this, &ALyraBRSpectatorController::SpectateNextPlayer);
-    InputComponent->BindAction("SpectatePrevious", IE_Pressed, this, &ALyraBRSpectatorController::SpectatePreviousPlayer);
+    InputComponent->BindAction("SpectateNext", IE_Pressed, this, &ABRSpectatorController::OnNextPlayerInput);
+    InputComponent->BindAction("SpectatePrevious", IE_Pressed, this, &ABRSpectatorController::OnPreviousPlayerInput);
 }
 
-void ALyraBRSpectatorController::SpectateNextPlayer()
+void ABRSpectatorController::UpdateAlivePlayersList()
 {
-    UpdateSpectateableList();
-
-    if (SpectateablePlayerStates.Num() == 0) return;
-
-    int32 CurrentIndex = GetCurrentSpectateIndex();
-    int32 NextIndex = (CurrentIndex + 1) % SpectateablePlayerStates.Num();
-
-    SpectatePlayer(SpectateablePlayerStates[NextIndex]);
-}
-
-void ALyraBRSpectatorController::SpectatePreviousPlayer()
-{
-    UpdateSpectateableList();
-
-    if (SpectateablePlayerStates.Num() == 0) return;
-
-    int32 CurrentIndex = GetCurrentSpectateIndex();
-    int32 PrevIndex = (CurrentIndex - 1 + SpectateablePlayerStates.Num()) % SpectateablePlayerStates.Num();
-
-    SpectatePlayer(SpectateablePlayerStates[PrevIndex]);
-}
-
-void ALyraBRSpectatorController::SpectatePlayer_Implementation(APlayerState* TargetPlayerState)
-{
-    if (!TargetPlayerState) return;
-
-    SetSpectatedPlayer(TargetPlayerState);
-}
-
-void ALyraBRSpectatorController::UpdateSpectateableList()
-{
-    SpectateablePlayerStates.Empty();
+    AlivePlayersList.Empty();
 
     AGameStateBase* GameState = GetWorld()->GetGameState();
     if (!GameState) return;
 
     for (APlayerState* PS : GameState->PlayerArray)
     {
-        if (PS && PS->GetPawn() && !PS->GetPawn()->IsPendingKillPending())
+        if (PS && !PS->IsOnlyASpectator())
         {
-            // 只添加存活的玩家
-            SpectateablePlayerStates.Add(PS);
+            // 检查是否存活（可以通过 Health 或 GameplayTag 判断）
+            AlivePlayersList.Add(PS);
         }
     }
 }
 
-void ALyraBRSpectatorController::SetSpectatedPlayer(APlayerState* PlayerState)
+void ABRSpectatorController::SpectateNextPlayer()
 {
-    if (!PlayerState) return;
+    UpdateAlivePlayersList();
+    if (AlivePlayersList.Num() == 0) return;
 
-    CurrentSpectatedPlayerState = PlayerState;
+    CurrentSpectateIndex = (CurrentSpectateIndex + 1) % AlivePlayersList.Num();
+    SpectatePlayer(AlivePlayersList[CurrentSpectateIndex]);
+}
 
-    APawn* TargetPawn = PlayerState->GetPawn();
+void ABRSpectatorController::SpectatePreviousPlayer()
+{
+    UpdateAlivePlayersList();
+    if (AlivePlayersList.Num() == 0) return;
+
+    CurrentSpectateIndex--;
+    if (CurrentSpectateIndex < 0)
+    {
+        CurrentSpectateIndex = AlivePlayersList.Num() - 1;
+    }
+    SpectatePlayer(AlivePlayersList[CurrentSpectateIndex]);
+}
+
+void ABRSpectatorController::SpectatePlayer(APlayerState* TargetPlayerState)
+{
+    if (!TargetPlayerState) return;
+
+    CurrentSpectatedPlayer = TargetPlayerState;
+
+    APawn* TargetPawn = TargetPlayerState->GetPawn();
     if (TargetPawn)
     {
-        SetViewTarget(TargetPawn);
+        SetViewTargetWithBlend(TargetPawn, 0.5f);
     }
 }
 
-int32 ALyraBRSpectatorController::GetCurrentSpectateIndex() const
+void ABRSpectatorController::OnNextPlayerInput()
 {
-    if (!CurrentSpectatedPlayerState) return 0;
+    SpectateNextPlayer();
+}
 
-    return SpectateablePlayerStates.IndexOfByKey(CurrentSpectatedPlayerState);
+void ABRSpectatorController::OnPreviousPlayerInput()
+{
+    SpectatePreviousPlayer();
 }
 ```
 
-## 八、网络优化：Replication Graph
+### 7.2 队友观战 UI
 
-### 8.1 自定义 Replication Graph
+创建 **Widget** 显示队友状态：
 
 ```cpp
-// LyraBRReplicationGraph.h
+// WBP_SquadStatus.h (Blueprint)
+// 功能：
+// 1. 显示所有队友的头像、名称、生命值
+// 2. 高亮当前观战的队友
+// 3. 显示队友的倒地状态
+// 4. 点击头像切换观战目标
+```
+
+---
+
+## 8. 100 人网络优化
+
+### 8.1 Replication Graph 配置
+
+为 Battle Royale 创建专用 **Replication Graph**：
+
+```cpp
+// BRReplicationGraph.h
 #pragma once
 
+#include "CoreMinimal.h"
 #include "ReplicationGraph.h"
-#include "LyraBRReplicationGraph.generated.h"
+#include "BRReplicationGraph.generated.h"
 
-/**
- * 大逃杀模式的网络复制图
- * 优化 100 玩家同时在线的网络性能
- */
-UCLASS(Transient, Config=Engine)
-class ULyraBRReplicationGraph : public UReplicationGraph
+UCLASS()
+class BATTLEROYALEPROJECT_API UBRReplicationGraph : public UReplicationGraph
 {
     GENERATED_BODY()
 
 public:
-    ULyraBRReplicationGraph();
-
     virtual void InitGlobalActorClassSettings() override;
     virtual void InitGlobalGraphNodes() override;
-    virtual void InitConnectionGraphNodes(UNetReplicationGraphConnection* ConnectionManager) override;
     virtual void RouteAddNetworkActorToNodes(const FNewReplicatedActorInfo& ActorInfo, FGlobalActorReplicationInfo& GlobalInfo) override;
     virtual void RouteRemoveNetworkActorToNodes(const FNewReplicatedActorInfo& ActorInfo) override;
 
 protected:
-    // 全局始终相关节点（GameState 等）
+    // Grid 节点（空间分割）
     UPROPERTY()
-    TObjectPtr<class UReplicationGraphNode_ActorList> AlwaysRelevantNode;
+    UReplicationGraphNode_GridSpatialization2D* GridNode;
 
-    // 玩家状态节点
+    // 全局始终相关节点
     UPROPERTY()
-    TObjectPtr<class UReplicationGraphNode_ActorList> PlayerStateNode;
-
-    // 空间分区节点（用于优化位置相关的复制）
-    UPROPERTY()
-    TObjectPtr<class UReplicationGraphNode_GridSpatialization2D> GridNode;
-
-    // 每个连接的特定节点映射
-    TMap<UNetConnection*, TObjectPtr<class ULyraBRReplicationGraphNode_AlwaysRelevant_ForConnection>> ConnectionToAlwaysRelevantNodeMap;
-
-private:
-    void SetupClassReplicationInfo();
-};
-
-/**
- * 每个连接的始终相关节点
- * 包含玩家自己的 Pawn、控制器等
- */
-UCLASS()
-class ULyraBRReplicationGraphNode_AlwaysRelevant_ForConnection : public UReplicationGraphNode
-{
-    GENERATED_BODY()
-
-public:
-    virtual void GatherActorListsForConnection(const FConnectionGatherActorListParameters& Params) override;
-    virtual void OnCollectActorRepListStats(struct FActorRepListStatCollector& StatCollector) const override;
-
-    void AddAlwaysRelevantActor(AActor* Actor);
-    void RemoveAlwaysRelevantActor(AActor* Actor);
-
-protected:
-    UPROPERTY()
-    TArray<TObjectPtr<AActor>> AlwaysRelevantActors;
+    UReplicationGraphNode_ActorList* AlwaysRelevantNode;
 };
 ```
 
-**实现文件（LyraBRReplicationGraph.cpp）**：
+**实现 Grid 分割**：
 
 ```cpp
-#include "LyraBRReplicationGraph.h"
+// BRReplicationGraph.cpp
+#include "BRReplicationGraph.h"
 #include "Net/UnrealNetwork.h"
-#include "Engine/World.h"
-#include "GameFramework/PlayerController.h"
-#include "GameFramework/PlayerState.h"
-#include "GameFramework/Pawn.h"
-#include "ReplicationGraphNode_ActorList.h"
-#include "ReplicationGraphNode_GridSpatialization.h"
+#include "ReplicationGraphNode_GridSpatialization2D.h"
 
-ULyraBRReplicationGraph::ULyraBRReplicationGraph()
-{
-}
-
-void ULyraBRReplicationGraph::InitGlobalActorClassSettings()
+void UBRReplicationGraph::InitGlobalActorClassSettings()
 {
     Super::InitGlobalActorClassSettings();
 
-    SetupClassReplicationInfo();
+    // 配置 Player 始终相关
+    FClassReplicationInfo PlayerRepInfo;
+    PlayerRepInfo.SetCullDistanceSquared(0.0f); // 不按距离剔除
+    GlobalActorReplicationInfoMap.SetClassInfo(APlayerController::StaticClass(), PlayerRepInfo);
+
+    // 配置武器的复制距离
+    FClassReplicationInfo WeaponRepInfo;
+    WeaponRepInfo.SetCullDistanceSquared(5000.0f * 5000.0f); // 50m
+    // GlobalActorReplicationInfoMap.SetClassInfo(AWeaponActorClass::StaticClass(), WeaponRepInfo);
 }
 
-void ULyraBRReplicationGraph::InitGlobalGraphNodes()
+void UBRReplicationGraph::InitGlobalGraphNodes()
 {
-    Super::InitGlobalGraphNodes();
+    // 创建 Grid 节点（空间分割）
+    GridNode = CreateNewNode<UReplicationGraphNode_GridSpatialization2D>();
+    GridNode->CellSize = 10000.0f; // 100m 一个格子
+    GridNode->SpatialBias = FVector2D(0.0f, 0.0f);
+    AddGlobalGraphNode(GridNode);
 
     // 创建全局始终相关节点
     AlwaysRelevantNode = CreateNewNode<UReplicationGraphNode_ActorList>();
     AddGlobalGraphNode(AlwaysRelevantNode);
-
-    // 创建 PlayerState 节点
-    PlayerStateNode = CreateNewNode<UReplicationGraphNode_ActorList>();
-    AddGlobalGraphNode(PlayerStateNode);
-
-    // 创建空间分区节点（用于位置相关的 Actor）
-    GridNode = CreateNewNode<UReplicationGraphNode_GridSpatialization2D>();
-    GridNode->CellSize = 10000.0f; // 100 米格子
-    GridNode->SpatialBias = FVector2D(0.0f, 0.0f);
-    AddGlobalGraphNode(GridNode);
 }
 
-void ULyraBRReplicationGraph::InitConnectionGraphNodes(UNetReplicationGraphConnection* ConnectionManager)
+void UBRReplicationGraph::RouteAddNetworkActorToNodes(const FNewReplicatedActorInfo& ActorInfo, FGlobalActorReplicationInfo& GlobalInfo)
 {
-    Super::InitConnectionGraphNodes(ConnectionManager);
-
-    // 为每个连接创建特定的始终相关节点
-    ULyraBRReplicationGraphNode_AlwaysRelevant_ForConnection* AlwaysRelevantForConnection = 
-        CreateNewNode<ULyraBRReplicationGraphNode_AlwaysRelevant_ForConnection>();
-
-    ConnectionToAlwaysRelevantNodeMap.Add(ConnectionManager->NetConnection, AlwaysRelevantForConnection);
-    ConnectionManager->OnClientVisibleLevelNamesAdd.AddUObject(AlwaysRelevantForConnection, 
-        &UReplicationGraphNode::NotifyAddNetworkActor);
-}
-
-void ULyraBRReplicationGraph::RouteAddNetworkActorToNodes(const FNewReplicatedActorInfo& ActorInfo, 
-                                                          FGlobalActorReplicationInfo& GlobalInfo)
-{
-    AActor* Actor = ActorInfo.Actor;
-
-    // GameState 始终复制给所有人
-    if (Actor->IsA(AGameStateBase::StaticClass()))
+    if (ActorInfo.Actor->IsA(APlayerController::StaticClass()))
     {
+        // PlayerController 始终相关
         AlwaysRelevantNode->NotifyAddNetworkActor(ActorInfo);
-        return;
     }
-
-    // PlayerState 复制给所有人（用于排行榜等）
-    if (Actor->IsA(APlayerState::StaticClass()))
+    else if (ActorInfo.Actor->IsA(APawn::StaticClass()))
     {
-        PlayerStateNode->NotifyAddNetworkActor(ActorInfo);
-        return;
-    }
-
-    // PlayerController 和 Pawn 添加到所属连接的特定节点
-    if (Actor->IsA(APlayerController::StaticClass()) || Actor->IsA(APawn::StaticClass()))
-    {
-        if (APlayerController* PC = Cast<APlayerController>(Actor))
-        {
-            if (UNetConnection* NetConnection = PC->GetNetConnection())
-            {
-                if (ULyraBRReplicationGraphNode_AlwaysRelevant_ForConnection** Node = 
-                    ConnectionToAlwaysRelevantNodeMap.Find(NetConnection))
-                {
-                    (*Node)->AddAlwaysRelevantActor(Actor);
-                }
-            }
-        }
-        return;
-    }
-
-    // 其他 Actor 添加到空间分区节点
-    GridNode->AddActor_Dormancy(ActorInfo, GlobalInfo);
-}
-
-void ULyraBRReplicationGraph::RouteRemoveNetworkActorToNodes(const FNewReplicatedActorInfo& ActorInfo)
-{
-    AActor* Actor = ActorInfo.Actor;
-
-    if (Actor->IsA(AGameStateBase::StaticClass()))
-    {
-        AlwaysRelevantNode->NotifyRemoveNetworkActor(ActorInfo);
-    }
-    else if (Actor->IsA(APlayerState::StaticClass()))
-    {
-        PlayerStateNode->NotifyRemoveNetworkActor(ActorInfo);
+        // Pawn 加入 Grid
+        GridNode->AddActor_Dormancy(ActorInfo, GlobalInfo);
     }
     else
     {
-        GridNode->RemoveActor_Dormancy(ActorInfo);
+        // 其他 Actor（武器、战利品）加入 Grid
+        GridNode->AddActor_Static(ActorInfo, GlobalInfo);
     }
 }
 
-void ULyraBRReplicationGraph::SetupClassReplicationInfo()
+void UBRReplicationGraph::RouteRemoveNetworkActorToNodes(const FNewReplicatedActorInfo& ActorInfo)
 {
-    // 配置不同类的复制频率
-    // 玩家角色：高频率
-    TArray<UClass*> HighFrequencyClasses = { APawn::StaticClass(), ACharacter::StaticClass() };
-    for (UClass* Class : HighFrequencyClasses)
-    {
-        FClassReplicationInfo ClassInfo;
-        ClassInfo.ReplicationPeriodFrame = 1; // 每帧复制
-        GlobalActorReplicationInfoMap.SetClassInfo(Class, ClassInfo);
-    }
+    GridNode->RemoveActor_Static(ActorInfo);
+    AlwaysRelevantNode->NotifyRemoveNetworkActor(ActorInfo);
+}
+```
 
-    // 战利品：低频率
-    FClassReplicationInfo LootClassInfo;
-    LootClassInfo.ReplicationPeriodFrame = 10; // 每 10 帧复制一次
-    GlobalActorReplicationInfoMap.SetClassInfo(ALyraBRLootActor::StaticClass(), LootClassInfo);
+### 8.2 客户端预测优化
 
-    // 载具：中等频率
-    FClassReplicationInfo VehicleClassInfo;
-    VehicleClassInfo.ReplicationPeriodFrame = 3; // 每 3 帧复制一次
-    GlobalActorReplicationInfoMap.SetClassInfo(ALyraBRVehicle::StaticClass(), VehicleClassInfo);
+使用 **GAS 预测** 减少网络延迟：
+
+```cpp
+// 在 Ability 中启用预测
+NetExecutionPolicy = EGameplayAbilityNetExecutionPolicy::LocalPredicted;
+
+// 在 GameplayEffect 中启用预测
+PredictionType = EGameplayEffectDurationType::Instant;
+
+// 关键操作使用 RPC 确认
+UFUNCTION(Server, Reliable, WithValidation)
+void ServerConfirmAction(FGameplayAbilitySpecHandle Handle);
+```
+
+### 8.3 带宽优化
+
+**优化 Actor 复制频率**：
+
+```cpp
+// BRCharacter.cpp
+ABRCharacter::ABRCharacter()
+{
+    // 降低非关键 Actor 的更新频率
+    NetUpdateFrequency = 10.0f; // 每秒 10 次（默认 100）
+    MinNetUpdateFrequency = 2.0f;
+
+    // 启用网络优先级
+    NetPriority = 1.0f;
+    NetCullDistanceSquared = 10000.0f * 10000.0f; // 100m
 }
 
-// ULyraBRReplicationGraphNode_AlwaysRelevant_ForConnection 实现
-
-void ULyraBRReplicationGraphNode_AlwaysRelevant_ForConnection::GatherActorListsForConnection(
-    const FConnectionGatherActorListParameters& Params)
+// 动态调整优先级
+void ABRCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
-    for (AActor* Actor : AlwaysRelevantActors)
+    Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+
+    // 仅复制给队友
+    DOREPLIFETIME_CONDITION(ABRCharacter, TeamID, COND_OwnerOnly);
+
+    // 跳过初始复制（优化初始连接）
+    DOREPLIFETIME_CONDITION(ABRCharacter, EquippedWeapon, COND_SkipOwner);
+}
+```
+
+**启用 Actor 休眠**：
+
+```cpp
+// 启用休眠机制
+NetDormancy = DORM_DormantAll;
+
+// 唤醒条件
+void ABRWeapon::OnPickup()
+{
+    FlushNetDormancy(); // 拾取时唤醒
+}
+
+void ABRWeapon::OnDrop()
+{
+    SetNetDormancy(DORM_DormantAll); // 丢弃后休眠
+}
+```
+
+---
+
+## 9. 完整项目集成
+
+### 9.1 创建 Battle Royale Experience
+
+创建 **Experience Definition**：
+
+```
+Content/Experiences/B_BattleRoyale/
+├── B_BattleRoyale_Experience.uasset (ULyraExperienceDefinition)
+├── PDA_BattleRoyale_SafeZone.uasset (UBRSafeZoneData)
+├── DA_BattleRoyale_LootTable.uasset
+└── GFAs/
+    ├── GFA_AddBRComponents.uasset (GameFeatureAction)
+    └── GFA_LoadBRMap.uasset
+```
+
+**Experience 配置**：
+
+```cpp
+// B_BattleRoyale_Experience (Data Asset)
+Experience Definition:
+- Default Pawn Data: PDA_BattleRoyale_Character
+- Actions:
+  1. AddComponents:
+     - GameState: BRSafeZoneManagerComponent, BRSquadComponent
+     - PlayerState: BRPlayerStatComponent
+  2. AddAbilitySets:
+     - AS_BattleRoyale (包含 DBNO、Revive、SafeZoneDamage)
+  3. LoadMap:
+     - Map: BattleRoyale_BigMap
+```
+
+### 9.2 Game Feature Plugin 结构
+
+创建 **Game Feature Plugin**：
+
+```
+Plugins/GameFeatures/BattleRoyale/
+├── Content/
+│   ├── Actors/
+│   │   ├── BP_BRTransportPlane.uasset
+│   │   ├── BP_BRAirdrop.uasset
+│   │   ├── BP_BRLootSpawner.uasset
+│   │   └── BP_BRRespawnBeacon.uasset
+│   ├── Abilities/
+│   │   ├── GA_Parachute.uasset
+│   │   ├── GA_DBNO.uasset
+│   │   ├── GA_Revive.uasset
+│   │   └── GA_SafeZoneDamage.uasset
+│   ├── UI/
+│   │   ├── WBP_BRMinimap.uasset
+│   │   ├── WBP_SafeZoneTimer.uasset
+│   │   └── WBP_SquadStatus.uasset
+│   └── Data/
+│       ├── PDA_BattleRoyale_SafeZone.uasset
+│       └── DT_LootTable.uasset (DataTable)
+└── Source/
+    └── BattleRoyaleRuntime/
+        ├── Public/
+        │   ├── BRSafeZoneManagerComponent.h
+        │   ├── BRSquadComponent.h
+        │   ├── BRTransportPlane.h
+        │   └── ...
+        └── Private/
+            └── ...
+```
+
+### 9.3 GameMode 配置
+
+创建 **Battle Royale GameMode**：
+
+```cpp
+// BRGameMode.h
+#pragma once
+
+#include "CoreMinimal.h"
+#include "GameModes/LyraGameMode.h"
+#include "BRGameMode.generated.h"
+
+UENUM(BlueprintType)
+enum class EBRMatchPhase : uint8
+{
+    WaitingPlayers,
+    Boarding,
+    Flying,
+    InProgress,
+    EndGame
+};
+
+UCLASS()
+class BATTLEROYALEPROJECT_API ABRGameMode : public ALyraGameMode
+{
+    GENERATED_BODY()
+
+public:
+    ABRGameMode();
+
+    virtual void InitGame(const FString& MapName, const FString& Options, FString& ErrorMessage) override;
+    virtual void HandleMatchIsWaitingToStart() override;
+    virtual void HandleMatchHasStarted() override;
+
+    // 更新比赛阶段
+    UFUNCTION(BlueprintCallable, Category = "GameMode")
+    void SetMatchPhase(EBRMatchPhase NewPhase);
+
+protected:
+    UPROPERTY(EditDefaultsOnly, Category = "BattleRoyale")
+    int32 MinPlayersToStart = 10;
+
+    UPROPERTY(EditDefaultsOnly, Category = "BattleRoyale")
+    int32 MaxPlayers = 100;
+
+    UPROPERTY(EditDefaultsOnly, Category = "BattleRoyale")
+    float BoardingDuration = 30.0f;
+
+    UPROPERTY(EditDefaultsOnly, Category = "BattleRoyale")
+    TSubclassOf<class ABRTransportPlane> TransportPlaneClass;
+
+    UPROPERTY(BlueprintReadOnly, Category = "BattleRoyale")
+    EBRMatchPhase CurrentPhase;
+
+private:
+    UPROPERTY()
+    ABRTransportPlane* TransportPlane;
+
+    FTimerHandle PhaseTimerHandle;
+
+    void StartBoardingPhase();
+    void StartFlyingPhase();
+    void StartInProgressPhase();
+    void CheckWinCondition();
+};
+```
+
+---
+
+## 10. 测试与调优
+
+### 10.1 本地测试配置
+
+**编辑器多人测试**：
+
+```ini
+; DefaultEngine.ini
+[/Script/Engine.GameEngine]
++NetDriverDefinitions=(DefName="GameNetDriver",DriverClassName="/Script/OnlineSubsystemUtils.IpNetDriver",DriverClassNameFallback="/Script/OnlineSubsystemUtils.IpNetDriver")
+
+[/Script/OnlineSubsystemUtils.IpNetDriver]
+MaxClientRate=100000
+MaxInternetClientRate=100000
+NetServerMaxTickRate=30
+LanServerMaxTickRate=30
+```
+
+**启动多客户端**：
+
+```bash
+# 服务器
+UE5Editor.exe ProjectName -server -log
+
+# 客户端 1
+UE5Editor.exe ProjectName 127.0.0.1 -game -log -ResX=800 -ResY=600 -WinX=0 -WinY=0
+
+# 客户端 2
+UE5Editor.exe ProjectName 127.0.0.1 -game -log -ResX=800 -ResY=600 -WinX=810 -WinY=0
+```
+
+### 10.2 性能分析命令
+
+**网络调试命令**：
+
+```
+stat net                  // 网络统计
+stat netplayermovement    // 玩家移动同步统计
+stat game                 // 游戏逻辑统计
+stat fps                  // 帧率
+stat unit                 // CPU/GPU 时间
+
+// Replication Graph 调试
+net.RepGraph.PrintAll 1
+net.RepGraph.DrawDebug 1
+
+// 带宽分析
+net.PktLag=50             // 模拟 50ms 延迟
+net.PktLoss=5             // 模拟 5% 丢包
+```
+
+### 10.3 压力测试
+
+使用 **Gauntlet** 框架进行压力测试：
+
+```cpp
+// BRGauntletTest.cpp
+class FBRStressTest : public FLyraTestControllerBase
+{
+public:
+    virtual void OnInit() override
     {
-        if (Actor && !Actor->IsPendingKillPending())
+        // 生成 100 个 Bot
+        for (int32 i = 0; i < 100; ++i)
         {
-            Params.OutGatheredReplicationLists.AddReplicationActorList(Actor);
+            SpawnBotPlayer();
         }
     }
-}
 
-void ULyraBRReplicationGraphNode_AlwaysRelevant_ForConnection::OnCollectActorRepListStats(
-    struct FActorRepListStatCollector& StatCollector) const
-{
-    StatCollector.AddList(AlwaysRelevantActors.Num());
-}
-
-void ULyraBRReplicationGraphNode_AlwaysRelevant_ForConnection::AddAlwaysRelevantActor(AActor* Actor)
-{
-    AlwaysRelevantActors.AddUnique(Actor);
-}
-
-void ULyraBRReplicationGraphNode_AlwaysRelevant_ForConnection::RemoveAlwaysRelevantActor(AActor* Actor)
-{
-    AlwaysRelevantActors.Remove(Actor);
-}
-```
-
-### 8.2 配置 Replication Graph
-
-在项目配置文件 **DefaultEngine.ini** 中：
-
-```ini
-[/Script/OnlineSubsystemUtils.IpNetDriver]
-ReplicationDriverClassName="/Script/YourProject.LyraBRReplicationGraph"
-
-[/Script/Engine.ReplicationGraph]
-; 空间分区设置
-GridSizeX=20
-GridSizeY=20
-
-; 连接设置
-MaxConnectionsForSpatialRelevancy=100
-
-; 距离裁剪
-NetCullDistanceSquared=225000000.0 ; 15000cm = 150m
-```
-
-## 九、性能优化
-
-### 9.1 LOD（细节层次）配置
-
-```cpp
-// LyraBRLODManager.h
-#pragma once
-
-#include "Subsystems/WorldSubsystem.h"
-#include "LyraBRLODManager.generated.h"
-
-/**
- * LOD 管理子系统
- * 根据玩家距离动态调整角色和载具的细节层次
- */
-UCLASS()
-class ULyraBRLODManager : public UTickableWorldSubsystem
-{
-    GENERATED_BODY()
-
-public:
-    virtual void Initialize(FSubsystemCollectionBase& Collection) override;
-    virtual void Tick(float DeltaTime) override;
-    virtual TStatId GetStatId() const override;
-
-protected:
-    // LOD 距离阈值
-    UPROPERTY(Config)
-    float LOD0Distance = 5000.0f; // 50m
-
-    UPROPERTY(Config)
-    float LOD1Distance = 10000.0f; // 100m
-
-    UPROPERTY(Config)
-    float LOD2Distance = 20000.0f; // 200m
-
-private:
-    void UpdateCharacterLODs();
-    void UpdateVehicleLODs();
-    int32 CalculateLODLevel(float Distance) const;
-};
-```
-
-### 9.2 流式加载优化
-
-```cpp
-// LyraBRStreamingManager.h
-#pragma once
-
-#include "Subsystems/WorldSubsystem.h"
-#include "LyraBRStreamingManager.generated.h"
-
-/**
- * 流式加载管理器
- * 根据玩家位置和安全区动态加载/卸载地图区块
- */
-UCLASS()
-class ULyraBRStreamingManager : public UWorldSubsystem
-{
-    GENERATED_BODY()
-
-public:
-    virtual void Initialize(FSubsystemCollectionBase& Collection) override;
-    virtual void Deinitialize() override;
-
-    // 更新流式加载
-    UFUNCTION(BlueprintCallable, Category = "Streaming")
-    void UpdateStreaming();
-
-protected:
-    // 预加载距离
-    UPROPERTY(Config)
-    float PreloadDistance = 50000.0f; // 500m
-
-    // 卸载距离
-    UPROPERTY(Config)
-    float UnloadDistance = 100000.0f; // 1000m
-
-private:
-    void LoadLevelsNearPlayers();
-    void UnloadDistantLevels();
-    TArray<FName> GetLevelsInRadius(const FVector& Center, float Radius);
-
-    FTimerHandle StreamingUpdateTimer;
-};
-```
-
-### 9.3 渲染优化
-
-在项目设置中配置：
-
-**DefaultEngine.ini**：
-
-```ini
-[/Script/Engine.RendererSettings]
-; 动态阴影距离
-r.Shadow.DistanceScale=0.6
-
-; 级联阴影图距离
-r.Shadow.CSM.MaxCascades=3
-
-; 网格体 LOD 距离缩放
-r.StaticMeshLODDistanceScale=0.8
-
-; 粒子效果距离裁剪
-r.MaxParticleCullDistance=10000
-
-[/Script/Engine.Engine]
-; 网络更新频率
-NetClientTicksPerSecond=60
-
-[SystemSettings]
-; 角色渲染设置
-r.SkeletalMeshLODBias=1
-r.SkeletalMeshMinLODSize=512
-
-; 纹理设置
-r.Streaming.PoolSize=3000
-r.Streaming.MaxNumTexturesToStreamPerFrame=10
-```
-
-## 十、服务器架构
-
-### 10.1 专用服务器配置
-
-**Target.cs 配置**：
-
-```csharp
-// YourProjectServer.Target.cs
-using UnrealBuildTool;
-
-public class YourProjectServerTarget : TargetRules
-{
-    public YourProjectServerTarget(TargetInfo Target) : base(Target)
+    virtual void OnTick(float TimeDelta) override
     {
-        Type = TargetType.Server;
-        DefaultBuildSettings = BuildSettingsVersion.V2;
-        ExtraModuleNames.Add("YourProject");
+        // 检测网络性能
+        if (GetAverageLatency() > 200.0f)
+        {
+            UE_LOG(LogTemp, Warning, TEXT("High latency detected: %.2fms"), GetAverageLatency());
+        }
 
-        bUseLoggingInShipping = true;
-        bCompilePhysX = true;
-        bCompileAPEX = false;
-        bCompileNvCloth = false;
-        
-        // 性能优化
-        bWithServerCode = true;
-        bBuildDeveloperTools = false;
-        bBuildWithEditorOnlyData = false;
+        // 检测帧率
+        if (GetAverageFPS() < 30.0f)
+        {
+            UE_LOG(LogTemp, Warning, TEXT("Low FPS detected: %.2f"), GetAverageFPS());
+        }
     }
-}
-```
-
-### 10.2 游戏服务器管理
-
-```cpp
-// LyraBRServerManager.h
-#pragma once
-
-#include "Subsystems/GameInstanceSubsystem.h"
-#include "LyraBRServerManager.generated.h"
-
-USTRUCT(BlueprintType)
-struct FBRMatchInfo
-{
-    GENERATED_BODY()
-
-    UPROPERTY(BlueprintReadOnly)
-    FString MatchID;
-
-    UPROPERTY(BlueprintReadOnly)
-    int32 CurrentPlayers;
-
-    UPROPERTY(BlueprintReadOnly)
-    int32 MaxPlayers;
-
-    UPROPERTY(BlueprintReadOnly)
-    EBattleRoyalePhase CurrentPhase;
-
-    UPROPERTY(BlueprintReadOnly)
-    float MatchStartTime;
-};
-
-/**
- * 服务器管理子系统
- * 处理匹配创建、玩家连接和服务器状态
- */
-UCLASS()
-class ULyraBRServerManager : public UGameInstanceSubsystem
-{
-    GENERATED_BODY()
-
-public:
-    virtual void Initialize(FSubsystemCollectionBase& Collection) override;
-    virtual void Deinitialize() override;
-
-    // 创建新匹配
-    UFUNCTION(BlueprintCallable, Category = "Server")
-    FString CreateNewMatch(const FString& MapName, int32 MaxPlayers);
-
-    // 获取当前匹配信息
-    UFUNCTION(BlueprintPure, Category = "Server")
-    FBRMatchInfo GetCurrentMatchInfo() const;
-
-    // 向主服务器报告状态
-    UFUNCTION(BlueprintCallable, Category = "Server")
-    void ReportServerStatus();
-
-protected:
-    UPROPERTY()
-    FBRMatchInfo CurrentMatch;
-
-private:
-    void SendHeartbeat();
-    FTimerHandle HeartbeatTimer;
 };
 ```
 
-### 10.3 匹配系统集成
+---
 
-与在线子系统（Online Subsystem）集成：
+## 📊 总结与优化建议
 
-```cpp
-// LyraBRMatchmakingSubsystem.h
-#pragma once
+### 已实现功能清单
 
-#include "Subsystems/GameInstanceSubsystem.h"
-#include "Interfaces/OnlineSessionInterface.h"
-#include "LyraBRMatchmakingSubsystem.generated.h"
+✅ **核心玩法**：
+- 安全区缩圈系统（多阶段，可配置）
+- 跳伞与落地系统
+- 战利品随机生成
+- 空投系统
 
-/**
- * 匹配系统
- * 处理玩家匹配和房间查找
- */
-UCLASS()
-class ULyraBRMatchmakingSubsystem : public UGameInstanceSubsystem
-{
-    GENERATED_BODY()
+✅ **组队与复活**：
+- 队伍管理系统
+- 倒地与救援机制
+- 复活信标系统
 
-public:
-    virtual void Initialize(FSubsystemCollectionBase& Collection) override;
+✅ **观战系统**：
+- 死亡后观战
+- 队友视角切换
 
-    // 开始匹配
-    UFUNCTION(BlueprintCallable, Category = "Matchmaking")
-    void StartMatchmaking();
+✅ **网络优化**：
+- Replication Graph 空间分割
+- 客户端预测
+- 带宽优化策略
 
-    // 取消匹配
-    UFUNCTION(BlueprintCallable, Category = "Matchmaking")
-    void CancelMatchmaking();
+### 下一步优化方向
 
-    // 创建私人房间
-    UFUNCTION(BlueprintCallable, Category = "Matchmaking")
-    bool CreatePrivateMatch(int32 MaxPlayers);
+1. **战斗平衡**：
+   - 调整武器伤害
+   - 优化战利品分布
+   - 平衡安全区速度
 
-    // 加入私人房间
-    UFUNCTION(BlueprintCallable, Category = "Matchmaking")
-    void JoinPrivateMatch(const FString& RoomCode);
+2. **UI 完善**：
+   - 击杀提示
+   - 伤害数字显示
+   - 排名界面
 
-protected:
-    TSharedPtr<class IOnlineSession> OnlineSessionInterface;
+3. **音效与特效**：
+   - 枪声传播系统
+   - 缩圈警告音效
+   - 空投飞机音效
 
-private:
-    void OnCreateSessionComplete(FName SessionName, bool bWasSuccessful);
-    void OnFindSessionsComplete(bool bWasSuccessful);
-    void OnJoinSessionComplete(FName SessionName, EOnJoinSessionCompleteResult::Type Result);
+4. **反外挂措施**：
+   - 服务端权威验证
+   - 射线检测防穿墙
+   - 移动速度限制
 
-    FOnCreateSessionCompleteDelegate OnCreateSessionCompleteDelegate;
-    FOnFindSessionsCompleteDelegate OnFindSessionsCompleteDelegate;
-    FOnJoinSessionCompleteDelegate OnJoinSessionCompleteDelegate;
+### 推荐学习资源
 
-    TSharedPtr<class FOnlineSessionSearch> SessionSearch;
-};
-```
+- **PUBG/Apex Legends** 的 GDC 演讲
+- **Fortnite** 的网络架构案例
+- **Unreal Engine Replication Graph** 官方文档
 
-## 十一、实战案例：从 Lyra 改造
+---
 
-### 11.1 项目配置清单
+## 🎉 恭喜！
 
-1. **添加 C++ 类**：
-   - 复制上述所有头文件和实现文件到项目
-   - 在 `Build.cs` 中添加模块依赖：
-     ```csharp
-     PublicDependencyModuleNames.AddRange(new string[] 
-     {
-         "Core", "CoreUObject", "Engine", "InputCore",
-         "LyraGame", "ModularGameplay", "GameplayAbilities",
-         "ReplicationGraph", "OnlineSubsystem", "OnlineSubsystemUtils"
-     });
-     ```
+你已经完成了一个完整的 **Battle Royale** 模式开发！这个项目涵盖了：
 
-2. **创建 Data Assets**：
-   - `DA_BattleRoyaleExperience`：配置游戏体验
-   - `DA_BRLootConfig`：配置战利品生成
-   - `DA_BRSafeZoneConfig`：配置安全区阶段
+- 大规模多人网络同步
+- 复杂的游戏阶段管理
+- 动态内容生成（战利品、空投）
+- 玩家交互系统（救援、观战）
 
-3. **创建蓝图**：
-   - `BP_BRGameMode`：基于 `ALyraBattleRoyaleGameMode`
-   - `BP_BRGameState`：基于 `ALyraBattleRoyaleGameState`
-   - `BP_BRPlane`：基于 `ALyraBRPlaneActor`
-   - `BP_BRSafeZoneManager`：基于 `ALyraBRSafeZoneManager`
-   - `WBP_BRInventory`：库存 UI
-   - `WBP_BRHud`：主 HUD
+现在你可以：
 
-4. **配置地图**：
-   - 创建大型开放世界地图（建议 8x8km 或更大）
-   - 放置战利品生成点（使用 Tag: "LootSpawn"）
-   - 放置载具生成点（使用 Tag: "VehicleSpawn"）
-   - 配置流式加载子关卡
+1. 扩展更多玩法（载具、技能道具）
+2. 优化性能支持更大地图
+3. 添加排位赛系统
+4. 集成社交功能（好友组队、语音聊天）
 
-### 11.2 测试和调试
-
-**控制台命令**：
-
-```
-; 显示网络统计
-stat net
-
-; 显示 Replication Graph 统计
-replicationgraph.displaydebug
-
-; 模拟延迟
-net pktlag 100
-
-; 模拟丢包
-net pktloss 5
-
-; 显示帧率
-stat fps
-
-; 显示安全区调试信息
-showdebug safezone
-```
-
-**日志类别**：
-
-```cpp
-// 在代码中添加日志类别
-DECLARE_LOG_CATEGORY_EXTERN(LogLyraBR, Log, All);
-DEFINE_LOG_CATEGORY(LogLyraBR);
-
-// 使用示例
-UE_LOG(LogLyraBR, Log, TEXT("Battle Royale phase changed to: %d"), (int32)CurrentPhase);
-```
-
-## 十二、总结与最佳实践
-
-### 12.1 核心要点
-
-1. **网络优化是关键**：
-   - 使用 Replication Graph 减少网络开销
-   - 合理设置复制频率
-   - 使用相关性裁剪
-
-2. **性能至上**：
-   - LOD 系统必须配置得当
-   - 流式加载确保内存不溢出
-   - 使用性能分析工具持续监控
-
-3. **游戏平衡性**：
-   - 战利品分布要公平但有趣
-   - 安全区收缩节奏决定游戏时长
-   - 武器和装备需要大量测试平衡
-
-4. **玩家体验**：
-   - UI 要清晰直观
-   - 反馈要及时（拾取、击杀、伤害）
-   - 观战系统让死亡玩家不无聊
-
-### 12.2 进阶功能
-
-- **排行榜和赛季系统**
-- **好友组队**
-- **语音通讯**
-- **回放系统**
-- **反作弊系统**
-- **分区匹配（按技能分级）**
-
-### 12.3 常见问题
-
-**Q: 如何处理网络延迟补偿？**
-A: 使用 UE5 的 Lag Compensation 系统，结合 Character Movement Component 的预测功能。
-
-**Q: 100 玩家对服务器配置要求？**
-A: 建议至少 16核 CPU、32GB RAM、高速 SSD。使用云服务可按需扩展。
-
-**Q: 如何防止外挂？**
-A: 服务器权威验证所有重要操作、使用 Easy Anti-Cheat 等第三方工具、记录异常数据分析。
-
-**Q: 移动端能否支持大逃杀？**
-A: 可以，但需要大幅降低渲染质量、减少同屏玩家数量、优化网络数据包大小。
-
-## 总结
-
-本章详细介绍了如何在 Lyra 框架下开发一个完整的大逃杀游戏模式，涵盖了从核心架构到网络优化的所有关键技术点。通过合理利用 Lyra 的模块化设计、Experience 系统和 GAS，我们可以快速构建出高质量的大型多人游戏。
-
-记住，大逃杀模式的成功不仅在于技术实现，更在于游戏设计和玩家体验的打磨。持续迭代、收集反馈、优化平衡性，才能创造出真正吸引玩家的游戏。
+**继续挑战更高难度的项目吧！** 🚀
